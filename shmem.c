@@ -52,13 +52,12 @@ static int shm_find_id(int shmid)
 	return -1;
 }
 
-static void *listening_thread(void * arg)
-{
+static void *listening_thread(void * arg) {
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
 	int sendsock;
 	DBG ("%s: thread started", __PRETTY_FUNCTION__);
-	while ((sendsock = accept (ctx.sock, (struct sockaddr *)&addr, &len)) != -1)
+	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1)
 	{
 		unsigned int shmid;
 		int idx;
@@ -86,6 +85,44 @@ static void *listening_thread(void * arg)
 	return NULL;
 }
 
+static int create_listener(){
+	int i;
+	ctx.sock = socket (AF_UNIX, SOCK_STREAM, 0);
+	if (!ctx.sock) {
+		DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
+		errno = EINVAL;
+		return -1;
+	}
+	for (i = 0; i < 4096; i++) {
+		struct sockaddr_un addr;
+		int len;
+		memset (&addr, 0, sizeof(addr));
+		addr.sun_family = AF_UNIX;
+		ctx.sockid = (getpid() + i) & 0xffff;
+		sprintf (&addr.sun_path[1], SOCKNAME, ctx.sockid);
+		len = sizeof(addr.sun_family) + strlen(&addr.sun_path[1]) + 1;
+		if (bind (ctx.sock, (struct sockaddr *)&addr, len) != 0) {
+			//DBG ("%s: cannot bind UNIX socket %s: %s, trying next one, len %d", __PRETTY_FUNCTION__, &addr.sun_path[1], strerror(errno), len);
+			continue;
+		}
+		DBG ("%s: bound UNIX socket %s", __PRETTY_FUNCTION__, addr.sun_path + 1);
+		break;
+	}
+	if (i == 4096) {
+		DBG ("%s: cannot bind UNIX socket, bailing out", __PRETTY_FUNCTION__);
+		ctx.sockid = 0;
+		errno = ENOMEM;
+		return -1;
+	}
+	if (listen (ctx.sock, 4) != 0) {
+		DBG ("%s: listen failed", __PRETTY_FUNCTION__);
+		errno = ENOMEM;
+		return -1;
+	}
+	pthread_create (&listening_thread_id, NULL, &listening_thread, NULL);
+	return 0;
+}
+
 /* Get shared memory segment.  */
 int shmget (key_t key, size_t size, int flags)
 {
@@ -93,57 +130,20 @@ int shmget (key_t key, size_t size, int flags)
 	int idx;
 
 	DBG ("%s: key %d size %zu flags 0%o (flags are ignored)", __PRETTY_FUNCTION__, key, size, flags);
-	if (key != IPC_PRIVATE)
-	{
+	if (key != IPC_PRIVATE) {
 		DBG ("%s: key %d != IPC_PRIVATE,  this is not supported", __PRETTY_FUNCTION__, key);
 		errno = EINVAL;
 		return -1;
 	}
-	if (!listening_thread_id)
-	{
-		int i;
-		ctx.sock = socket (AF_UNIX, SOCK_STREAM, 0);
-		if (!ctx.sock)
-		{
-			DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
-			errno = EINVAL;
-			return -1;
+	if (!listening_thread_id) {
+		int ret = create_listener();
+		if(ret != 0){
+			return ret;
 		}
-		for (i = 0; i < 4096; i++)
-		{
-			struct sockaddr_un addr;
-			int len;
-			memset (&addr, 0, sizeof(addr));
-			addr.sun_family = AF_UNIX;
-			ctx.sockid = (getpid() + i) & 0xffff;
-			sprintf (&addr.sun_path[1], SOCKNAME, ctx.sockid);
-			len = sizeof(addr.sun_family) + strlen(&addr.sun_path[1]) + 1;
-			if (bind (ctx.sock, (struct sockaddr *)&addr, len) != 0)
-			{
-				//DBG ("%s: cannot bind UNIX socket %s: %s, trying next one, len %d", __PRETTY_FUNCTION__, &addr.sun_path[1], strerror(errno), len);
-				continue;
-			}
-			DBG ("%s: bound UNIX socket %s", __PRETTY_FUNCTION__, addr.sun_path + 1);
-			break;
-		}
-		if (i == 4096)
-		{
-			DBG ("%s: cannot bind UNIX socket, bailing out", __PRETTY_FUNCTION__);
-			ctx.sockid = 0;
-			errno = ENOMEM;
-			return -1;
-		}
-		if (listen (ctx.sock, 4) != 0)
-		{
-			DBG ("%s: listen failed", __PRETTY_FUNCTION__);
-			errno = ENOMEM;
-			return -1;
-		}
-		pthread_create (&listening_thread_id, NULL, &listening_thread, NULL);
 	}
 	pthread_mutex_lock (&mutex);
 	idx = shmem_amount;
-	sprintf (buf, SOCKNAME "-%d", ctx.sockid, idx);
+	snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx.sockid, idx);
 	shmem_amount ++;
 	shmem_counter = (shmem_counter + 1) & 0x7fff;
 	size_t shmid = shmem_counter;
@@ -154,8 +154,7 @@ int shmget (key_t key, size_t size, int flags)
 	shmem[idx].addr = NULL;
 	shmem[idx].id = get_shmid(&ctx, shmid);
 	shmem[idx].markedForDeletion = 0;
-	if (shmem[idx].descriptor < 0)
-	{
+	if (shmem[idx].descriptor < 0) {
 		DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
 		shmem_amount --;
 		shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
