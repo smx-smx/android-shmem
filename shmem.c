@@ -167,6 +167,39 @@ int shmget (key_t key, size_t size, int flags)
 	return get_shmid(&ctx, shmid);
 }
 
+int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
+	int addrlen;
+	int recvsock;
+	pthread_mutex_unlock (&mutex);
+
+	DBG ("%s: sockid %x", __PRETTY_FUNCTION__, sid);
+
+	*pidx = get_index(shmid);
+	memset (&addr, 0, sizeof(addr));
+	addr->sun_family = AF_UNIX;
+	sprintf (&addr->sun_path[1], SOCKNAME, sid);
+	addrlen = sizeof(addr->sun_family) + strlen(&addr->sun_path[1]) + 1;
+
+	DBG ("%s: addr %s", __PRETTY_FUNCTION__, &addr->sun_path[1]);
+
+	recvsock = socket (AF_UNIX, SOCK_STREAM, 0);
+	if (!recvsock) {
+		DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
+		errno = EINVAL;
+		return -1;
+	}
+	if (connect (recvsock, (struct sockaddr *)addr, addrlen) != 0) {
+		DBG ("%s: cannot connect to UNIX socket %s: %s, len %d", __PRETTY_FUNCTION__, addr->sun_path + 1, strerror(errno), addrlen);
+		close (recvsock);
+		errno = EINVAL;
+		return -1;
+	}
+
+	DBG ("%s: connected to socket %s", __PRETTY_FUNCTION__, &addr->sun_path[1]);
+
+	return recvsock;
+}
+
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg)
 {
@@ -188,39 +221,12 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 	if (idx == -1 && sid != ctx.sockid)
 	{
 		struct sockaddr_un addr;
-		int addrlen;
-		int recvsock;
 		int descriptor;
 		int size;
-
-		pthread_mutex_unlock (&mutex);
-
-		DBG ("%s: sockid %x", __PRETTY_FUNCTION__, sid);
-
-		idx = get_index(shmid);
-		memset (&addr, 0, sizeof(addr));
-		addr.sun_family = AF_UNIX;
-		sprintf (&addr.sun_path[1], SOCKNAME, sid);
-		addrlen = sizeof(addr.sun_family) + strlen(&addr.sun_path[1]) + 1;
-
-		DBG ("%s: addr %s", __PRETTY_FUNCTION__, &addr.sun_path[1]);
-
-		recvsock = socket (AF_UNIX, SOCK_STREAM, 0);
-		if (!recvsock)
-		{
-			DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
-			errno = EINVAL;
+		int recvsock = create_client(shmid, sid, &idx, &addr);
+		if(recvsock < 0){
 			return (void *)-1;
 		}
-		if (connect (recvsock, (struct sockaddr *)&addr, addrlen) != 0)
-		{
-			DBG ("%s: cannot connect to UNIX socket %s: %s, len %d", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno), addrlen);
-			close (recvsock);
-			errno = EINVAL;
-			return (void *)-1;
-		}
-
-		DBG ("%s: connected to socket %s", __PRETTY_FUNCTION__, &addr.sun_path[1]);
 
 		if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx))
 		{
