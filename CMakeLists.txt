@@ -5,6 +5,7 @@ add_library(ashmem SHARED
 	fd_recv.c
 	fd_send.c
 	shmem.c
+	shmem_socket.c
 )
 target_include_directories(ashmem PUBLIC
 	${CMAKE_SOURCE_DIR}
