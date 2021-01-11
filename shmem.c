@@ -200,6 +200,37 @@ int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
 	return recvsock;
 }
 
+int receive_fd(int shmid, int sid, int *pidx){
+	int idx;
+	struct sockaddr_un addr;
+	int descriptor;
+
+	int recvsock = create_client(shmid, sid, &idx, &addr);
+	if(recvsock < 0){
+		return -1;
+	}
+
+	if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx))
+	{
+		DBG ("%s: send() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
+		close (recvsock);
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (ancil_recv_fd (recvsock, &descriptor) != 0)
+	{
+		DBG ("%s: ERROR: ancil_recv_fd() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
+		close (recvsock);
+		errno = EINVAL;
+		return -1;
+	}
+	close (recvsock);
+
+	*pidx = idx;
+	return descriptor;
+}
+
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg)
 {
@@ -220,37 +251,15 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 
 	if (idx == -1 && sid != ctx.sockid)
 	{
-		struct sockaddr_un addr;
-		int descriptor;
 		int size;
-		int recvsock = create_client(shmid, sid, &idx, &addr);
-		if(recvsock < 0){
-			return (void *)-1;
-		}
-
-		if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx))
-		{
-			DBG ("%s: send() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
-			close (recvsock);
-			errno = EINVAL;
-			return (void *)-1;
-		}
-
-		if (ancil_recv_fd (recvsock, &descriptor) != 0)
-		{
-			DBG ("%s: ERROR: ancil_recv_fd() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
-			close (recvsock);
-			errno = EINVAL;
-			return (void *)-1;
-		}
-		close (recvsock);
+		int descriptor = receive_fd(shmid, sid, &idx);
 
 		DBG ("%s: got FD %d", __PRETTY_FUNCTION__, descriptor);
 
 		size = ashmem_get_size_region(descriptor);
 		if (size == 0 || size == -1)
 		{
-			DBG ("%s: ERROR: ashmem_get_size_region() returned %d on socket %s: %s", __PRETTY_FUNCTION__, size, addr.sun_path + 1, strerror(errno));
+			DBG ("%s: ERROR: ashmem_get_size_region() returned %d on socket %d: %s", __PRETTY_FUNCTION__, size, sid, strerror(errno));
 			errno = EINVAL;
 			return (void *)-1;
 		}
