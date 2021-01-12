@@ -72,29 +72,32 @@ static void *listening_thread(void *arg) {
 	int sendsock;
 	DBG ("thread started");
 	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1) {
-		unsigned int shmid;
-		int idx;
-		if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-			DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(idx));
-			close (sendsock);
-			continue;
-		}
-		pthread_mutex_lock (&mutex);
-		{
-			shmid = get_shmid(&ctx, idx);
-			idx = shm_find_id (shmid);
-			if (idx != -1) {
-				if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0) {
-					DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
-				}
-			} else {
-				DBG ("ERROR: cannot find shmid 0x%x", shmid);
+		do {
+			unsigned int shmid;
+			int idx;
+			if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
+				DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(idx));
+				break;
 			}
-		}
-		pthread_mutex_unlock (&mutex);
+
+			pthread_mutex_lock (&mutex);
+			{
+				shmid = get_shmid(&ctx, idx);
+				idx = shm_find_id (shmid);
+				if (idx != -1) {
+					if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0) {
+						DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
+					}
+				} else {
+					DBG ("ERROR: cannot find shmid 0x%x", shmid);
+				}
+			}
+			pthread_mutex_unlock (&mutex);
+		} while(0);
+
 		close (sendsock);
-		len = sizeof(addr);
 	}
+
 	DBG ("ERROR: listen() failed, thread stopped");
 	return NULL;
 }
