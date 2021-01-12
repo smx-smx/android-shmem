@@ -40,13 +40,12 @@ static size_t shmem_amount = 0;
 static size_t shmem_counter = 0;
 
 
-static int shm_find_id(int shmid)
-{
+static int shm_find_id(int shmid){
 	int i;
-	for (i = 0; i < shmem_amount; i++)
-	{
-		if (shmem[i].id == shmid)
+	for (i = 0; i < shmem_amount; i++) {
+		if (shmem[i].id == shmid){
 			return i;
+		}
 	}
 	DBG ("%s: cannot find shmid %x", __PRETTY_FUNCTION__, shmid);
 	return -1;
@@ -231,6 +230,21 @@ int receive_fd(int shmid, int sid, int *pidx){
 	return descriptor;
 }
 
+int shmem_new_seg(int shmid, int fd, int size){
+	pthread_mutex_lock (&mutex);
+
+	int idx = shmem_amount;
+	shmem_amount ++;
+	shmem = realloc(shmem, shmem_amount * sizeof(shmem_t));
+	shmem[idx].id = shmid;
+	shmem[idx].descriptor = fd;
+	shmem[idx].size = size;
+	shmem[idx].addr = NULL;
+	shmem[idx].markedForDeletion = 0;
+	DBG ("%s: created new remote shmem ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, shmid, shmem[idx].descriptor, shmem[idx].size);
+	return idx;
+}
+
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg)
 {
@@ -265,31 +279,19 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 		}
 
 		DBG ("%s: got size %d", __PRETTY_FUNCTION__, size);
-
-		pthread_mutex_lock (&mutex);
-		idx = shmem_amount;
-		shmem_amount ++;
-		shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
-		shmem[idx].id = shmid;
-		shmem[idx].descriptor = descriptor;
-		shmem[idx].size = size;
-		shmem[idx].addr = NULL;
-		shmem[idx].markedForDeletion = 0;
-		DBG ("%s: created new remote shmem ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, shmid, shmem[idx].descriptor, shmem[idx].size);
+		idx = shmem_new_seg(shmid, descriptor, size);
 	}
 
-	if (idx == -1)
-	{
+	if (idx == -1) {
 		DBG ("%s: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return (void *)-1;
 	}
-	if (shmem[idx].addr == NULL)
-	{
+
+	if (shmem[idx].addr == NULL) {
 		shmem[idx].addr = mmap(NULL, shmem[idx].size, PROT_READ | (shmflg == 0 ? PROT_WRITE : 0), MAP_SHARED, shmem[idx].descriptor, 0);
-		if (shmem[idx].addr == MAP_FAILED)
-		{
+		if (shmem[idx].addr == MAP_FAILED) {
 			DBG ("%s: mmap() failed for ID %x FD %d: %s", __PRETTY_FUNCTION__, idx, shmem[idx].descriptor, strerror(errno));
 			shmem[idx].addr = NULL;
 		}
@@ -302,27 +304,25 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 }
 
 static void delete_shmem(int idx) {
-	if (shmem[idx].descriptor)
+	if (shmem[idx].descriptor){
 		close (shmem[idx].descriptor);
+	}
 	shmem_amount --;
 	memmove (&shmem[idx], &shmem[idx+1], (shmem_amount - idx) * sizeof(shmem_t));
 }
 
 /* Detach shared memory segment.  */
-int shmdt (const void *shmaddr)
-{
+int shmdt (const void *shmaddr) {
 	pthread_mutex_lock (&mutex);
 	int i;
-	for (i = 0; i < shmem_amount; i++)
-	{
-		if (shmem[i].addr == shmaddr)
-		{
-			if (munmap (shmem[i].addr, shmem[i].size) != 0)
+	for (i = 0; i < shmem_amount; i++) {
+		if (shmem[i].addr == shmaddr) {
+			if (munmap (shmem[i].addr, shmem[i].size) != 0) {
 				DBG ("%s: munmap %p failed", __PRETTY_FUNCTION__, shmaddr);
+			}
 			shmem[i].addr = NULL;
 			DBG ("%s: unmapped addr %p for FD %d ID %d shmid %x", __PRETTY_FUNCTION__, shmaddr, shmem[i].descriptor, i, shmem[i].id);
-			if (shmem[i].markedForDeletion || get_sockid(shmem[i].id) != ctx.sockid)
-			{
+			if (shmem[i].markedForDeletion || get_sockid(shmem[i].id) != ctx.sockid) {
 				DBG ("%s: deleting shmid %x", __PRETTY_FUNCTION__, shmem[i].id);
 				delete_shmem(i);
 			}
@@ -337,23 +337,20 @@ int shmdt (const void *shmaddr)
 	return -1;
 }
 
-static int shm_remove (int shmid)
-{
+static int shm_remove (int shmid) {
 	int idx;
 
 	DBG ("%s: deleting shmid %x", __PRETTY_FUNCTION__, shmid);
 	pthread_mutex_lock (&mutex);
 	idx = shm_find_id (shmid);
-	if (idx == -1)
-	{
+	if (idx == -1) {
 		DBG ("%s: ERROR: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (shmem[idx].addr)
-	{
+	if (shmem[idx].addr) {
 		DBG ("%s: shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", __PRETTY_FUNCTION__, shmid, shmem[idx].addr);
 		// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
 		shmem[idx].markedForDeletion = 1;
@@ -365,21 +362,18 @@ static int shm_remove (int shmid)
 	return 0;
 }
 
-static int shm_stat (int shmid, struct shmid_ds *buf)
-{
+static int shm_stat (int shmid, struct shmid_ds *buf) {
 	int idx;
 
 	pthread_mutex_lock (&mutex);
 	idx = shm_find_id (shmid);
-	if (idx == -1)
-	{
+	if (idx == -1) {
 		DBG ("%s: ERROR: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return -1;
 	}
-	if (!buf)
-	{
+	if (!buf) {
 		DBG ("%s: ERROR: buf == NULL for shmid %x", __PRETTY_FUNCTION__, shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
@@ -405,16 +399,12 @@ static int shm_stat (int shmid, struct shmid_ds *buf)
 }
 
 /* Shared memory control operation.  */
-int shmctl (int shmid, int cmd, struct shmid_ds *buf)
-{
+int shmctl (int shmid, int cmd, struct shmid_ds *buf) {
 	//DBG ("%s: shmid %x cmd %d buf %p", __PRETTY_FUNCTION__, shmid, cmd, buf);
-	if (cmd == IPC_RMID)
-	{
-		return shm_remove (shmid);
-	}
-	if (cmd == IPC_STAT)
-	{
-		return shm_stat (shmid, buf);
+
+	switch(cmd){
+		case IPC_RMID: return shm_remove (shmid);
+		case IPC_STAT: return shm_stat (shmid, buf);
 	}
 
 	DBG ("%s: cmd %d not implemented yet!", __PRETTY_FUNCTION__, cmd);
