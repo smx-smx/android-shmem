@@ -141,7 +141,7 @@ int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
 	int idx;
 	shmem_ctx_t *ctx = &gCtx;
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = NULL;
 	int rc = -1;
 	size_t shmid;
 
@@ -164,7 +164,7 @@ int shmget (key_t key, size_t size, int flags) {
 		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx->sockid, idx);
 		ctx->shmem_counter = (ctx->shmem_counter + 1) & 0x7fff;
 		shmid = ctx->shmem_counter;
-		shmem_resize(ctx, ++ctx->shmem_amount);
+		pool = shmem_resize(ctx, ++ctx->shmem_amount);
 		size = ROUND_UP(size, getpagesize ());
 
 		pool[idx].size = size;
@@ -174,7 +174,7 @@ int shmget (key_t key, size_t size, int flags) {
 		pool[idx].markedForDeletion = 0;
 		if (pool[idx].descriptor < 0) {
 			DBG ("ashmem_create_region() failed for size %zu: %s", size, strerror(errno));
-			shmem_resize(ctx, --ctx->shmem_amount);
+			pool = shmem_resize(ctx, --ctx->shmem_amount);
 			break;
 		}
 		rc = 0;
@@ -258,10 +258,10 @@ int receive_fd(int shmid, int sid, int *pidx){
 }
 
 int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = NULL;
 
 	int idx = ctx->shmem_amount++;
-	shmem_resize(ctx, ctx->shmem_amount);
+	pool = shmem_resize(ctx, ctx->shmem_amount);
 	pool[idx].id = shmid;
 	pool[idx].descriptor = fd;
 	pool[idx].size = size;
