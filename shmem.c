@@ -30,6 +30,8 @@
 #define DBG(fmt, ...) fprintf(stderr, LOG_PREFIX fmt "\n", STRINGIFY(__PRETTY_FUNC__), ##__VA_ARGS__)
 #endif /* __ANDROID__ */
 
+#define UNUSED(x) (void)(x)
+
 #include "libancillary/ancillary.h"
 #include "cutils/ashmem.h"
 
@@ -47,7 +49,7 @@ static size_t shmem_counter = 0;
 
 
 static int shm_find_id(int shmid){
-	int i;
+	unsigned int i;
 	for (i = 0; i < shmem_amount; i++) {
 		if (shmem[i].id == shmid){
 			return i;
@@ -62,7 +64,9 @@ void *shmem_resize(int shmem_amount){
 	return shmem;
 }
 
-static void *listening_thread(void * arg) {
+static void *listening_thread(void *arg) {
+	UNUSED(arg);
+
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
 	int sendsock;
@@ -220,25 +224,33 @@ int receive_fd(int shmid, int sid, int *pidx){
 	struct sockaddr_un addr;
 	int descriptor;
 
+	int rc = -1;
+
 	int recvsock = create_client(shmid, sid, &idx, &addr);
 	if(recvsock < 0){
-		return -1;
+		return rc;
 	}
 
-	if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-		DBG ("send() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
-		close (recvsock);
-		errno = EINVAL;
-		return -1;
-	}
+	do {
+		if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
+			DBG ("send() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
+			errno = EINVAL;
+			break;
+		}
 
-	if (ancil_recv_fd (recvsock, &descriptor) != 0) {
-		DBG ("ERROR: ancil_recv_fd() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
-		close (recvsock);
-		errno = EINVAL;
-		return -1;
-	}
+		if (ancil_recv_fd (recvsock, &descriptor) != 0) {
+			DBG ("ERROR: ancil_recv_fd() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
+			errno = EINVAL;
+			break;
+		}
+
+		rc = 0;
+	} while(0);
 	close (recvsock);
+
+	if(rc < 0){
+		return rc;
+	}
 
 	*pidx = idx;
 	return descriptor;
@@ -282,8 +294,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 			DBG ("got FD %d", descriptor);
 
 			size = ashmem_get_size_region(descriptor);
-			if (size == 0 || size == -1)
-			{
+			if (size == 0 || size == -1) {
 				DBG ("ERROR: ashmem_get_size_region() returned %d on socket %d: %s", size, sid, strerror(errno));
 				errno = EINVAL;
 				return (void *)-1;
@@ -301,15 +312,21 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 		}
 	}
 
-	if (shmem[idx].addr == NULL) {
-		shmem[idx].addr = mmap(NULL, shmem[idx].size, PROT_READ | (shmflg == 0 ? PROT_WRITE : 0), MAP_SHARED, shmem[idx].descriptor, 0);
-		if (shmem[idx].addr == MAP_FAILED) {
+	addr = shmem[idx].addr;
+	if (addr == NULL) {
+		addr = mmap(
+			NULL, shmem[idx].size,
+			PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
+			MAP_SHARED,
+			shmem[idx].descriptor, 0
+		);
+		if (addr == MAP_FAILED) {
 			DBG ("mmap() failed for ID %x FD %d: %s", idx, shmem[idx].descriptor, strerror(errno));
-			shmem[idx].addr = NULL;
+			addr = NULL;
 		}
+		shmem[idx].addr = addr;
 	}
 
-	addr = shmem[idx].addr;
 	DBG ("mapped addr %p for FD %d ID %d", addr, shmem[idx].descriptor, idx);
 	pthread_mutex_unlock (&mutex);
 	return addr ? addr : (void *)-1;
@@ -326,7 +343,7 @@ static void delete_shmem(int idx) {
 /* Detach shared memory segment.  */
 int shmdt (const void *shmaddr) {
 	pthread_mutex_lock (&mutex);
-	int i;
+	unsigned int i;
 	for (i = 0; i < shmem_amount; i++) {
 		if (shmem[i].addr == shmaddr) {
 			if (munmap (shmem[i].addr, shmem[i].size) != 0) {
