@@ -179,8 +179,6 @@ int shmget (key_t key, size_t size, int flags) {
 int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
 	int addrlen;
 	int recvsock;
-	pthread_mutex_unlock (&mutex);
-
 	DBG ("%s: sockid %x", __PRETTY_FUNCTION__, sid);
 
 	*pidx = get_index(shmid);
@@ -273,30 +271,32 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 	pthread_mutex_lock (&mutex);
 	idx = shm_find_id (shmid);
 
-	if (idx == -1 && sid != ctx.sockid)
-	{
-		int size;
-		int descriptor = receive_fd(shmid, sid, &idx);
+	if (idx == -1){
+		pthread_mutex_unlock (&mutex);
 
-		DBG ("%s: got FD %d", __PRETTY_FUNCTION__, descriptor);
+		if(sid != ctx.sockid){
+			int size;
+			int descriptor = receive_fd(shmid, sid, &idx);
 
-		size = ashmem_get_size_region(descriptor);
-		if (size == 0 || size == -1)
-		{
-			DBG ("%s: ERROR: ashmem_get_size_region() returned %d on socket %d: %s", __PRETTY_FUNCTION__, size, sid, strerror(errno));
+			DBG ("%s: got FD %d", __PRETTY_FUNCTION__, descriptor);
+
+			size = ashmem_get_size_region(descriptor);
+			if (size == 0 || size == -1)
+			{
+				DBG ("%s: ERROR: ashmem_get_size_region() returned %d on socket %d: %s", __PRETTY_FUNCTION__, size, sid, strerror(errno));
+				errno = EINVAL;
+				return (void *)-1;
+			}
+
+			DBG ("%s: got size %d", __PRETTY_FUNCTION__, size);
+			idx = shmem_new_seg(shmid, descriptor, size);
+		}
+
+		if (idx == -1){
+			DBG ("%s: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
 			errno = EINVAL;
 			return (void *)-1;
 		}
-
-		DBG ("%s: got size %d", __PRETTY_FUNCTION__, size);
-		idx = shmem_new_seg(shmid, descriptor, size);
-	}
-
-	if (idx == -1) {
-		DBG ("%s: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
-		pthread_mutex_unlock (&mutex);
-		errno = EINVAL;
-		return (void *)-1;
 	}
 
 	if (shmem[idx].addr == NULL) {
@@ -306,10 +306,10 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 			shmem[idx].addr = NULL;
 		}
 	}
+
 	addr = shmem[idx].addr;
 	DBG ("%s: mapped addr %p for FD %d ID %d", __PRETTY_FUNCTION__, addr, shmem[idx].descriptor, idx);
 	pthread_mutex_unlock (&mutex);
-
 	return addr ? addr : (void *)-1;
 }
 
