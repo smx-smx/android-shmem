@@ -85,6 +85,28 @@ void *shmem_resize(shmem_ctx_t *ctx, int shmem_amount){
 	return ctx->pool;
 }
 
+char *asun_build_path(key_t key){
+	struct sockaddr_un dummy;
+	int max_length = sizeof(dummy.sun_path) - 1;
+	char *buf = calloc(max_length, 1);
+	snprintf(buf, max_length, SOCKNAME, key);
+	return buf;
+}
+
+int asun_path_cpy(char *dest, const char *src){
+	struct sockaddr_un dummy;
+	int in_length = strlen(src) + 1;
+	int max_length = sizeof(dummy.sun_path) - 1;
+
+	int length = in_length;
+	if(in_length > max_length){
+		length = max_length;
+	}
+
+	strncpy(dest, src, length);
+	return length;
+}
+
 static void *listening_thread(void *arg) {
 	DBG ("thread started");
 
@@ -140,10 +162,14 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 		addr.sun_family = AF_UNIX;
 		ctx->sockid = (key + i) & 0xffff;
 
-		char *socketPath = SUN_PATH_ABSTRACT(&addr);		
-		snprintf (socketPath, sizeof(addr.sun_path) - 1, SOCKNAME, ctx->sockid);
-		len = sizeof(addr);
+		char *socketPath = SUN_PATH_ABSTRACT(&addr);
+		{
+			char *socketPathSrc = asun_build_path(key);
+			asun_path_cpy(socketPath, socketPathSrc);
+			free(socketPathSrc);
+		}
 
+		len = sizeof(addr);
 		if (bind (ctx->sock, (struct sockaddr *)&addr, len) != 0) {
 			//DBG ("cannot bind UNIX socket %s: %s, trying next one, len %d", addr.sun_path, strerror(errno), len);
 			continue;
@@ -153,7 +179,7 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 	}
 	if (i == MAX_BIND_ATTEMPTS) {
 		DBG ("cannot bind UNIX socket, bailing out");
-		ctx->sockid = 0;
+		ctx->sockid = -1;
 		errno = ENOMEM;
 		return -1;
 	}
@@ -164,28 +190,6 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 	}
 	pthread_create (&listening_thread_id, NULL, &listening_thread, ctx);
 	return 0;
-}
-
-char *asun_build_path(key_t key){
-	struct sockaddr_un dummy;
-	int max_length = sizeof(dummy.sun_path) - 1;
-	char *buf = calloc(max_length, 1);
-	snprintf(buf, max_length, SOCKNAME, key);
-	return buf;
-}
-
-int asun_path_cpy(char *dest, const char *src){
-	struct sockaddr_un dummy;
-	int in_length = strlen(src) + 1;
-	int max_length = sizeof(dummy.sun_path) - 1;
-
-	int length = in_length;
-	if(in_length > max_length){
-		length = max_length;
-	}
-
-	strncpy(dest, src, length);
-	return length;
 }
 
 int try_get_socket(const char *path){
@@ -271,7 +275,6 @@ int shmget (key_t key, size_t size, int flags) {
 		}
 	} else {
 		ctx->sockid = key;
-		//DBG("sid: %d\n", ctx->sockid);
 	}
 
 	pthread_mutex_lock (&mutex);
