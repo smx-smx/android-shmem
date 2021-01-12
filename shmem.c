@@ -260,8 +260,7 @@ int receive_fd(int shmid, int sid, int *pidx){
 
 int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
 	shmem_t *pool = ctx->shmem;
-
-	pthread_mutex_lock (&mutex);
+	
 	int idx = ctx->shmem_amount++;
 	shmem_resize(ctx, ctx->shmem_amount);
 	pool[idx].id = shmid;
@@ -280,60 +279,67 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	void *addr;
 	shmem_ctx_t *ctx = &gCtx;
 	shmem_t *pool = ctx->shmem;
+	intptr_t rc = -1;
 
 	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
-
 	if (shmaddr != NULL) {
 		DBG ("shmaddr != NULL not supported");
 		errno = EINVAL;
-		return (void *)-1;
+		return (void *)rc;
 	}
 
 	pthread_mutex_lock (&mutex);
-	idx = shm_find_id (ctx, shmid);
-
-	if (idx == -1){
-		if(sid != ctx->sockid){
-			int size;
-			int descriptor = receive_fd(shmid, sid, &idx);
-
-			DBG ("got FD %d", descriptor);
-
-			size = ashmem_get_size_region(descriptor);
-			if (size == 0 || size == -1) {
-				DBG ("ERROR: ashmem_get_size_region() returned %d on socket %d: %s", size, sid, strerror(errno));
-				errno = EINVAL;
-				return (void *)-1;
-			}
-
-			DBG ("got size %d", size);
-			idx = shmem_new_seg(ctx, shmid, descriptor, size);
-		}
+	do {
+		idx = shm_find_id (ctx, shmid);
 
 		if (idx == -1){
-			pthread_mutex_unlock (&mutex);
-			DBG ("shmid %x does not exist", shmid);
-			errno = EINVAL;
-			return (void *)-1;
+			if(sid != ctx->sockid){
+				int size;
+				int descriptor = receive_fd(shmid, sid, &idx);
+
+				DBG ("got FD %d", descriptor);
+
+				size = ashmem_get_size_region(descriptor);
+				if (size == 0 || size == -1) {
+					DBG ("ERROR: ashmem_get_size_region() returned %d on socket %d: %s", size, sid, strerror(errno));
+					errno = EINVAL;
+					break;
+				}
+
+				DBG ("got size %d", size);
+				idx = shmem_new_seg(ctx, shmid, descriptor, size);
+			}
+
+			if (idx == -1){
+				DBG ("shmid %x does not exist", shmid);
+				errno = EINVAL;
+				break;
+			}
 		}
+
+		addr = pool[idx].addr;
+		if (addr == NULL) {
+			addr = mmap(
+				NULL, pool[idx].size,
+				PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
+				MAP_SHARED,
+				pool[idx].descriptor, 0
+			);
+			if (addr == MAP_FAILED) {
+				DBG ("mmap() failed for ID %x FD %d: %s", idx, pool[idx].descriptor, strerror(errno));
+				addr = NULL;
+			}
+			pool[idx].addr = addr;
+		}
+
+		DBG ("mapped addr %p for FD %d ID %d", addr, pool[idx].descriptor, idx);
+		rc = 0;
+	} while(0);
+
+	if(rc < 0){
+		return (void *)rc;
 	}
 
-	addr = pool[idx].addr;
-	if (addr == NULL) {
-		addr = mmap(
-			NULL, pool[idx].size,
-			PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
-			MAP_SHARED,
-			pool[idx].descriptor, 0
-		);
-		if (addr == MAP_FAILED) {
-			DBG ("mmap() failed for ID %x FD %d: %s", idx, pool[idx].descriptor, strerror(errno));
-			addr = NULL;
-		}
-		pool[idx].addr = addr;
-	}
-
-	DBG ("mapped addr %p for FD %d ID %d", addr, pool[idx].descriptor, idx);
 	pthread_mutex_unlock (&mutex);
 	return addr ? addr : (void *)-1;
 }
