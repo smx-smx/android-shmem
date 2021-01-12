@@ -8,20 +8,26 @@
 #include <errno.h>
 #include <pthread.h>
 
+#define STRINGIFY(x) STRINGIFY2(x)
+#define STRINGIFY2(x) #x
+
+#define LOG_PREFIX "[" __FILE__ ":%s:" STRINGIFY(__LINE__) "] "
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #include "sys/shm.h"
 
+
 #ifdef NDEBUG
-#define DBG(...) do {} while (0)
+#define DBG(fmt, ...) do {} while (0)
 #else
-#define DBG(...) __android_log_print(ANDROID_LOG_INFO, "shmem", __VA_ARGS__)
+#define DBG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shmem", LOG_PREFIX fmt, STRINGIFY(__PRETTY_FUNC__), ##__VA_ARGS__)
 #endif
 
 #else /* __ANDROID__ */
 #include <sys/shm.h>
 
-#define DBG(format, ...) fprintf(stderr, format "\n", __VA_ARGS__)
+#define DBG(fmt, ...) fprintf(stderr, LOG_PREFIX fmt "\n", STRINGIFY(__PRETTY_FUNC__), ##__VA_ARGS__)
 #endif /* __ANDROID__ */
 
 #include "libancillary/ancillary.h"
@@ -47,7 +53,7 @@ static int shm_find_id(int shmid){
 			return i;
 		}
 	}
-	DBG ("%s: cannot find shmid %x", __PRETTY_FUNCTION__, shmid);
+	DBG ("cannot find shmid %x", shmid);
 	return -1;
 }
 
@@ -60,12 +66,12 @@ static void *listening_thread(void * arg) {
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
 	int sendsock;
-	DBG ("%s: thread started", __PRETTY_FUNCTION__);
+	DBG ("thread started");
 	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1) {
 		unsigned int shmid;
 		int idx;
 		if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-			DBG ("%s: ERROR: recv() returned not %d bytes", __PRETTY_FUNCTION__, (int)sizeof(idx));
+			DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(idx));
 			close (sendsock);
 			continue;
 		}
@@ -75,17 +81,17 @@ static void *listening_thread(void * arg) {
 			idx = shm_find_id (shmid);
 			if (idx != -1) {
 				if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0) {
-					DBG ("%s: ERROR: ancil_send_fd() failed: %s", __PRETTY_FUNCTION__, strerror(errno));
+					DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
 				}
 			} else {
-				DBG ("%s: ERROR: cannot find shmid 0x%x", __PRETTY_FUNCTION__, shmid);
+				DBG ("ERROR: cannot find shmid 0x%x", shmid);
 			}
 		}
 		pthread_mutex_unlock (&mutex);
 		close (sendsock);
 		len = sizeof(addr);
 	}
-	DBG ("%s: ERROR: listen() failed, thread stopped", __PRETTY_FUNCTION__);
+	DBG ("ERROR: listen() failed, thread stopped");
 	return NULL;
 }
 
@@ -93,7 +99,7 @@ static int create_listener(){
 	int i;
 	ctx.sock = socket (AF_UNIX, SOCK_STREAM, 0);
 	if (!ctx.sock) {
-		DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
+		DBG ("cannot create UNIX socket: %s", strerror(errno));
 		errno = EINVAL;
 		return -1;
 	}
@@ -109,17 +115,17 @@ static int create_listener(){
 			//DBG ("%s: cannot bind UNIX socket %s: %s, trying next one, len %d", __PRETTY_FUNCTION__, &addr.sun_path[1], strerror(errno), len);
 			continue;
 		}
-		DBG ("%s: bound UNIX socket %s", __PRETTY_FUNCTION__, addr.sun_path + 1);
+		DBG ("bound UNIX socket %s", addr.sun_path + 1);
 		break;
 	}
 	if (i == 4096) {
-		DBG ("%s: cannot bind UNIX socket, bailing out", __PRETTY_FUNCTION__);
+		DBG ("cannot bind UNIX socket, bailing out");
 		ctx.sockid = 0;
 		errno = ENOMEM;
 		return -1;
 	}
 	if (listen (ctx.sock, 4) != 0) {
-		DBG ("%s: listen failed", __PRETTY_FUNCTION__);
+		DBG ("listen failed");
 		errno = ENOMEM;
 		return -1;
 	}
@@ -132,9 +138,9 @@ int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
 	int idx;
 
-	DBG ("%s: key %d size %zu flags 0%o (flags are ignored)", __PRETTY_FUNCTION__, key, size, flags);
+	DBG ("key %d size %zu flags 0%o (flags are ignored)", key, size, flags);
 	if (key != IPC_PRIVATE) {
-		DBG ("%s: key %d != IPC_PRIVATE,  this is not supported", __PRETTY_FUNCTION__, key);
+		DBG ("key %d != IPC_PRIVATE,  this is not supported", key);
 		errno = EINVAL;
 		return -1;
 	}
@@ -162,12 +168,12 @@ int shmget (key_t key, size_t size, int flags) {
 		shmem[idx].id = get_shmid(&ctx, shmid);
 		shmem[idx].markedForDeletion = 0;
 		if (shmem[idx].descriptor < 0) {
-			DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
+			DBG ("ashmem_create_region() failed for size %zu: %s", size, strerror(errno));
 			shmem_resize(--shmem_amount);
 			break;
 		}
 		rc = 0;
-		DBG ("%s: ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, get_shmid(&ctx, shmid), shmem[idx].descriptor, shmem[idx].size);
+		DBG ("ID %d shmid %x FD %d size %zu", idx, get_shmid(&ctx, shmid), shmem[idx].descriptor, shmem[idx].size);
 	} while(0);
 
 	pthread_mutex_unlock (&mutex);
@@ -181,7 +187,7 @@ int shmget (key_t key, size_t size, int flags) {
 int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
 	int addrlen;
 	int recvsock;
-	DBG ("%s: sockid %x", __PRETTY_FUNCTION__, sid);
+	DBG ("sockid %x", sid);
 
 	*pidx = get_index(shmid);
 	memset (&addr, 0, sizeof(addr));
@@ -189,22 +195,22 @@ int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
 	sprintf (&addr->sun_path[1], SOCKNAME, sid);
 	addrlen = sizeof(addr->sun_family) + strlen(&addr->sun_path[1]) + 1;
 
-	DBG ("%s: addr %s", __PRETTY_FUNCTION__, &addr->sun_path[1]);
+	DBG ("addr %s", &addr->sun_path[1]);
 
 	recvsock = socket (AF_UNIX, SOCK_STREAM, 0);
 	if (!recvsock) {
-		DBG ("%s: cannot create UNIX socket: %s", __PRETTY_FUNCTION__, strerror(errno));
+		DBG ("cannot create UNIX socket: %s", strerror(errno));
 		errno = EINVAL;
 		return -1;
 	}
 	if (connect (recvsock, (struct sockaddr *)addr, addrlen) != 0) {
-		DBG ("%s: cannot connect to UNIX socket %s: %s, len %d", __PRETTY_FUNCTION__, addr->sun_path + 1, strerror(errno), addrlen);
+		DBG ("cannot connect to UNIX socket %s: %s, len %d", addr->sun_path + 1, strerror(errno), addrlen);
 		close (recvsock);
 		errno = EINVAL;
 		return -1;
 	}
 
-	DBG ("%s: connected to socket %s", __PRETTY_FUNCTION__, &addr->sun_path[1]);
+	DBG ("connected to socket %s", &addr->sun_path[1]);
 
 	return recvsock;
 }
@@ -220,14 +226,14 @@ int receive_fd(int shmid, int sid, int *pidx){
 	}
 
 	if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-		DBG ("%s: send() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
+		DBG ("send() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
 		close (recvsock);
 		errno = EINVAL;
 		return -1;
 	}
 
 	if (ancil_recv_fd (recvsock, &descriptor) != 0) {
-		DBG ("%s: ERROR: ancil_recv_fd() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
+		DBG ("ERROR: ancil_recv_fd() failed on socket %s: %s", addr.sun_path + 1, strerror(errno));
 		close (recvsock);
 		errno = EINVAL;
 		return -1;
@@ -248,7 +254,7 @@ int shmem_new_seg(int shmid, int fd, int size){
 	shmem[idx].size = size;
 	shmem[idx].addr = NULL;
 	shmem[idx].markedForDeletion = 0;
-	DBG ("%s: created new remote shmem ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, shmid, shmem[idx].descriptor, shmem[idx].size);
+	DBG ("created new remote shmem ID %d shmid %x FD %d size %zu", idx, shmid, shmem[idx].descriptor, shmem[idx].size);
 	return idx;
 }
 
@@ -257,10 +263,10 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
 	int sid = get_sockid(shmid);
 	void *addr;
-	DBG ("%s: shmid %x shmaddr %p shmflg %d", __PRETTY_FUNCTION__, shmid, shmaddr, shmflg);
+	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
 
 	if (shmaddr != NULL) {
-		DBG ("%s: shmaddr != NULL not supported", __PRETTY_FUNCTION__);
+		DBG ("shmaddr != NULL not supported");
 		errno = EINVAL;
 		return (void *)-1;
 	}
@@ -273,23 +279,23 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 			int size;
 			int descriptor = receive_fd(shmid, sid, &idx);
 
-			DBG ("%s: got FD %d", __PRETTY_FUNCTION__, descriptor);
+			DBG ("got FD %d", descriptor);
 
 			size = ashmem_get_size_region(descriptor);
 			if (size == 0 || size == -1)
 			{
-				DBG ("%s: ERROR: ashmem_get_size_region() returned %d on socket %d: %s", __PRETTY_FUNCTION__, size, sid, strerror(errno));
+				DBG ("ERROR: ashmem_get_size_region() returned %d on socket %d: %s", size, sid, strerror(errno));
 				errno = EINVAL;
 				return (void *)-1;
 			}
 
-			DBG ("%s: got size %d", __PRETTY_FUNCTION__, size);
+			DBG ("got size %d", size);
 			idx = shmem_new_seg(shmid, descriptor, size);
 		}
 
 		if (idx == -1){
 			pthread_mutex_unlock (&mutex);
-			DBG ("%s: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
+			DBG ("shmid %x does not exist", shmid);
 			errno = EINVAL;
 			return (void *)-1;
 		}
@@ -298,13 +304,13 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	if (shmem[idx].addr == NULL) {
 		shmem[idx].addr = mmap(NULL, shmem[idx].size, PROT_READ | (shmflg == 0 ? PROT_WRITE : 0), MAP_SHARED, shmem[idx].descriptor, 0);
 		if (shmem[idx].addr == MAP_FAILED) {
-			DBG ("%s: mmap() failed for ID %x FD %d: %s", __PRETTY_FUNCTION__, idx, shmem[idx].descriptor, strerror(errno));
+			DBG ("mmap() failed for ID %x FD %d: %s", idx, shmem[idx].descriptor, strerror(errno));
 			shmem[idx].addr = NULL;
 		}
 	}
 
 	addr = shmem[idx].addr;
-	DBG ("%s: mapped addr %p for FD %d ID %d", __PRETTY_FUNCTION__, addr, shmem[idx].descriptor, idx);
+	DBG ("mapped addr %p for FD %d ID %d", addr, shmem[idx].descriptor, idx);
 	pthread_mutex_unlock (&mutex);
 	return addr ? addr : (void *)-1;
 }
@@ -324,12 +330,12 @@ int shmdt (const void *shmaddr) {
 	for (i = 0; i < shmem_amount; i++) {
 		if (shmem[i].addr == shmaddr) {
 			if (munmap (shmem[i].addr, shmem[i].size) != 0) {
-				DBG ("%s: munmap %p failed", __PRETTY_FUNCTION__, shmaddr);
+				DBG ("munmap %p failed", shmaddr);
 			}
 			shmem[i].addr = NULL;
-			DBG ("%s: unmapped addr %p for FD %d ID %d shmid %x", __PRETTY_FUNCTION__, shmaddr, shmem[i].descriptor, i, shmem[i].id);
+			DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, shmem[i].descriptor, i, shmem[i].id);
 			if (shmem[i].markedForDeletion || get_sockid(shmem[i].id) != ctx.sockid) {
-				DBG ("%s: deleting shmid %x", __PRETTY_FUNCTION__, shmem[i].id);
+				DBG ("deleting shmid %x", shmem[i].id);
 				delete_shmem(i);
 			}
 			pthread_mutex_unlock (&mutex);
@@ -338,7 +344,7 @@ int shmdt (const void *shmaddr) {
 	}
 	pthread_mutex_unlock (&mutex);
 
-	DBG ("%s: invalid address %p", __PRETTY_FUNCTION__, shmaddr);
+	DBG ("invalid address %p", shmaddr);
 	errno = EINVAL;
 	return -1;
 }
@@ -346,18 +352,18 @@ int shmdt (const void *shmaddr) {
 static int shm_remove (int shmid) {
 	int idx;
 
-	DBG ("%s: deleting shmid %x", __PRETTY_FUNCTION__, shmid);
+	DBG ("deleting shmid %x", shmid);
 	pthread_mutex_lock (&mutex);
 	idx = shm_find_id (shmid);
 	if (idx == -1) {
-		DBG ("%s: ERROR: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
+		DBG ("ERROR: shmid %x does not exist", shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return -1;
 	}
 
 	if (shmem[idx].addr) {
-		DBG ("%s: shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", __PRETTY_FUNCTION__, shmid, shmem[idx].addr);
+		DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, shmem[idx].addr);
 		// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
 		shmem[idx].markedForDeletion = 1;
 		pthread_mutex_unlock (&mutex);
@@ -374,13 +380,13 @@ static int shm_stat (int shmid, struct shmid_ds *buf) {
 	pthread_mutex_lock (&mutex);
 	idx = shm_find_id (shmid);
 	if (idx == -1) {
-		DBG ("%s: ERROR: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
+		DBG ("ERROR: shmid %x does not exist", shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return -1;
 	}
 	if (!buf) {
-		DBG ("%s: ERROR: buf == NULL for shmid %x", __PRETTY_FUNCTION__, shmid);
+		DBG ("ERROR: buf == NULL for shmid %x", shmid);
 		pthread_mutex_unlock (&mutex);
 		errno = EINVAL;
 		return -1;
@@ -398,7 +404,7 @@ static int shm_stat (int shmid, struct shmid_ds *buf) {
 	buf->shm_perm.mode = 0666;
 	buf->shm_perm.__seq = 1;
 
-	DBG ("%s: shmid %x size %d", __PRETTY_FUNCTION__, shmid, (int)buf->shm_segsz);
+	DBG ("shmid %x size %d", shmid, (int)buf->shm_segsz);
 
 	pthread_mutex_unlock (&mutex);
 	return 0;
@@ -413,7 +419,7 @@ int shmctl (int shmid, int cmd, struct shmid_ds *buf) {
 		case IPC_STAT: return shm_stat (shmid, buf);
 	}
 
-	DBG ("%s: cmd %d not implemented yet!", __PRETTY_FUNCTION__, cmd);
+	DBG ("cmd %d not implemented yet!", cmd);
 	errno = EINVAL;
 	return -1;
 }
