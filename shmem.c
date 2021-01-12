@@ -287,7 +287,7 @@ int shmget (key_t key, size_t size, int flags) {
 
 		pool[idx].size = size;
 		pool[idx].descriptor = (ashmem_fd > -1) ? ashmem_fd : ashmem_create_region (buf, size);
-		pool[idx].addr = NULL;
+		pool[idx].addr = MAP_FAILED;
 		pool[idx].id = get_shmid(ctx, shmid);
 		pool[idx].key = key;
 		pool[idx].markedForDeletion = 0;
@@ -308,25 +308,16 @@ int shmget (key_t key, size_t size, int flags) {
 	return get_shmid(ctx, shmid);
 }
 
-int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
-	shmem_t *pool = NULL;
-
-	int idx = ctx->shmem_amount++;
-	pool = shmem_resize(ctx, ctx->shmem_amount);
-	pool[idx].id = shmid;
-	pool[idx].descriptor = fd;
-	pool[idx].size = size;
-	pool[idx].addr = NULL;
-	pool[idx].markedForDeletion = 0;
-	DBG ("created new remote shmem ID %d shmid %x FD %d size %zu", idx, shmid, pool[idx].descriptor, pool[idx].size);
-	return idx;
-}
-
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
 	shmem_ctx_t *ctx = &gCtx;
 	shmem_t *pool = ctx->pool;
+
+	if(shmaddr == MAP_FAILED){
+		errno = -EINVAL;
+		return MAP_FAILED;
+	}
 
 	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
 	if (shmaddr != NULL) {
@@ -348,7 +339,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 
 		mem = &pool[idx];
 
-		if (mem->addr == NULL) {
+		if (mem->addr == MAP_FAILED) {
 			mem->addr = mmap(
 				NULL, mem->size,
 				PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
@@ -402,7 +393,7 @@ int shmdt (const void *shmaddr) {
 			DBG ("munmap %p failed", shmaddr);
 			break;
 		}
-		mem->addr = NULL;
+		mem->addr = MAP_FAILED;
 		DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, mem->descriptor, idx, mem->id);
 		if (mem->markedForDeletion || get_sockid(mem->id) != ctx->sockid) {
 			DBG ("deleting shmid %x", mem->id);
@@ -436,10 +427,11 @@ static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 			break;
 		}
 
-		if (pool[idx].addr) {
-			DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, pool[idx].addr);
+		shmem_t *mem = &pool[idx];
+		if (mem->addr != MAP_FAILED) {
+			DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, mem->addr);
 			// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
-			pool[idx].markedForDeletion = 1;
+			mem->markedForDeletion = 1;
 			break;
 		}
 		delete_shmem(ctx, idx);
