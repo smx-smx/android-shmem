@@ -41,17 +41,12 @@
 static pthread_t listening_thread_id = 0;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static shmem_ctx_t ctx;
+static shmem_ctx_t gCtx;
 
-static shmem_t *shmem = NULL;
-static size_t shmem_amount = 0;
-static size_t shmem_counter = 0;
-
-
-static int shm_find_id(int shmid){
+static int shm_find_id(shmem_ctx_t *ctx, int shmid){
 	unsigned int i;
-	for (i = 0; i < shmem_amount; i++) {
-		if (shmem[i].id == shmid){
+	for (i = 0; i < ctx->shmem_amount; i++) {
+		if (ctx->shmem[i].id == shmid){
 			return i;
 		}
 	}
@@ -59,19 +54,21 @@ static int shm_find_id(int shmid){
 	return -1;
 }
 
-void *shmem_resize(int shmem_amount){
-	shmem = realloc(shmem, shmem_amount * sizeof(shmem_t));
-	return shmem;
+void *shmem_resize(shmem_ctx_t *ctx, int shmem_amount){
+	ctx->shmem_amount = shmem_amount;
+	ctx->shmem = realloc(ctx->shmem, ctx->shmem_amount * sizeof(shmem_t));
+	return ctx->shmem;
 }
 
 static void *listening_thread(void *arg) {
-	UNUSED(arg);
+	shmem_ctx_t *ctx = (shmem_ctx_t *)arg;
+	shmem_t *pool = ctx->shmem;
 
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
 	int sendsock;
 	DBG ("thread started");
-	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1) {
+	while ((sendsock = accept(ctx->sock, (struct sockaddr *)&addr, &len)) != -1) {
 		do {
 			unsigned int shmid;
 			int idx;
@@ -82,10 +79,10 @@ static void *listening_thread(void *arg) {
 
 			pthread_mutex_lock (&mutex);
 			{
-				shmid = get_shmid(&ctx, idx);
-				idx = shm_find_id (shmid);
+				shmid = get_shmid(ctx, idx);
+				idx = shm_find_id(ctx, shmid);
 				if (idx != -1) {
-					if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0) {
+					if (ancil_send_fd (sendsock, pool[idx].descriptor) != 0) {
 						DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
 					}
 				} else {
@@ -102,10 +99,10 @@ static void *listening_thread(void *arg) {
 	return NULL;
 }
 
-static int create_listener(){
+static int create_listener(shmem_ctx_t *ctx){
 	int i;
-	ctx.sock = socket (AF_UNIX, SOCK_STREAM, 0);
-	if (!ctx.sock) {
+	ctx->sock = socket (AF_UNIX, SOCK_STREAM, 0);
+	if (!ctx->sock) {
 		DBG ("cannot create UNIX socket: %s", strerror(errno));
 		errno = EINVAL;
 		return -1;
@@ -115,10 +112,10 @@ static int create_listener(){
 		int len;
 		memset (&addr, 0, sizeof(addr));
 		addr.sun_family = AF_UNIX;
-		ctx.sockid = (getpid() + i) & 0xffff;
-		sprintf (&addr.sun_path[1], SOCKNAME, ctx.sockid);
+		ctx->sockid = (getpid() + i) & 0xffff;
+		sprintf (&addr.sun_path[1], SOCKNAME, ctx->sockid);
 		len = sizeof(addr.sun_family) + strlen(&addr.sun_path[1]) + 1;
-		if (bind (ctx.sock, (struct sockaddr *)&addr, len) != 0) {
+		if (bind (ctx->sock, (struct sockaddr *)&addr, len) != 0) {
 			//DBG ("%s: cannot bind UNIX socket %s: %s, trying next one, len %d", __PRETTY_FUNCTION__, &addr.sun_path[1], strerror(errno), len);
 			continue;
 		}
@@ -127,11 +124,11 @@ static int create_listener(){
 	}
 	if (i == 4096) {
 		DBG ("cannot bind UNIX socket, bailing out");
-		ctx.sockid = 0;
+		ctx->sockid = 0;
 		errno = ENOMEM;
 		return -1;
 	}
-	if (listen (ctx.sock, 4) != 0) {
+	if (listen (ctx->sock, 4) != 0) {
 		DBG ("listen failed");
 		errno = ENOMEM;
 		return -1;
@@ -144,43 +141,45 @@ static int create_listener(){
 int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
 	int idx;
+	shmem_ctx_t *ctx = &gCtx;
+	shmem_t *pool = ctx->shmem;
+	int rc = -1;
+	size_t shmid;
 
 	DBG ("key %d size %zu flags 0%o (flags are ignored)", key, size, flags);
 	if (key != IPC_PRIVATE) {
 		DBG ("key %d != IPC_PRIVATE,  this is not supported", key);
 		errno = EINVAL;
-		return -1;
+		return rc;
 	}
 	if (!listening_thread_id) {
-		int ret = create_listener();
-		if(ret != 0){
-			return ret;
+		rc = create_listener(ctx);
+		if(rc != 0){
+			return rc;
 		}
 	}
-
-	int rc = -1;
-	size_t shmid;
 
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shmem_amount;
-		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx.sockid, idx);
-		shmem_counter = (shmem_counter + 1) & 0x7fff;
-		shmid = shmem_counter;
-		shmem_resize(++shmem_amount);
+		idx = ctx->shmem_amount;
+		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx->sockid, idx);
+		ctx->shmem_counter = (ctx->shmem_counter + 1) & 0x7fff;
+		shmid = ctx->shmem_counter;
+		shmem_resize(ctx, ++ctx->shmem_amount);
 		size = ROUND_UP(size, getpagesize ());
-		shmem[idx].size = size;
-		shmem[idx].descriptor = ashmem_create_region (buf, size);
-		shmem[idx].addr = NULL;
-		shmem[idx].id = get_shmid(&ctx, shmid);
-		shmem[idx].markedForDeletion = 0;
-		if (shmem[idx].descriptor < 0) {
+
+		pool[idx].size = size;
+		pool[idx].descriptor = ashmem_create_region (buf, size);
+		pool[idx].addr = NULL;
+		pool[idx].id = get_shmid(ctx, shmid);
+		pool[idx].markedForDeletion = 0;
+		if (pool[idx].descriptor < 0) {
 			DBG ("ashmem_create_region() failed for size %zu: %s", size, strerror(errno));
-			shmem_resize(--shmem_amount);
+			shmem_resize(ctx, --ctx->shmem_amount);
 			break;
 		}
 		rc = 0;
-		DBG ("ID %d shmid %x FD %d size %zu", idx, get_shmid(&ctx, shmid), shmem[idx].descriptor, shmem[idx].size);
+		DBG ("ID %d shmid %x FD %d size %zu", idx, get_shmid(ctx, shmid), pool[idx].descriptor, pool[idx].size);
 	} while(0);
 
 	pthread_mutex_unlock (&mutex);
@@ -188,7 +187,7 @@ int shmget (key_t key, size_t size, int flags) {
 		return rc;
 	}
 
-	return get_shmid(&ctx, shmid);
+	return get_shmid(ctx, shmid);
 }
 
 int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
@@ -259,17 +258,18 @@ int receive_fd(int shmid, int sid, int *pidx){
 	return descriptor;
 }
 
-int shmem_new_seg(int shmid, int fd, int size){
-	pthread_mutex_lock (&mutex);
+int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
+	shmem_t *pool = ctx->shmem;
 
-	int idx = shmem_amount;
-	shmem_resize(++shmem_amount);
-	shmem[idx].id = shmid;
-	shmem[idx].descriptor = fd;
-	shmem[idx].size = size;
-	shmem[idx].addr = NULL;
-	shmem[idx].markedForDeletion = 0;
-	DBG ("created new remote shmem ID %d shmid %x FD %d size %zu", idx, shmid, shmem[idx].descriptor, shmem[idx].size);
+	pthread_mutex_lock (&mutex);
+	int idx = ctx->shmem_amount++;
+	shmem_resize(ctx, ctx->shmem_amount);
+	pool[idx].id = shmid;
+	pool[idx].descriptor = fd;
+	pool[idx].size = size;
+	pool[idx].addr = NULL;
+	pool[idx].markedForDeletion = 0;
+	DBG ("created new remote shmem ID %d shmid %x FD %d size %zu", idx, shmid, pool[idx].descriptor, pool[idx].size);
 	return idx;
 }
 
@@ -278,6 +278,9 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
 	int sid = get_sockid(shmid);
 	void *addr;
+	shmem_ctx_t *ctx = &gCtx;
+	shmem_t *pool = ctx->shmem;
+
 	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
 
 	if (shmaddr != NULL) {
@@ -287,10 +290,10 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	}
 
 	pthread_mutex_lock (&mutex);
-	idx = shm_find_id (shmid);
+	idx = shm_find_id (ctx, shmid);
 
 	if (idx == -1){
-		if(sid != ctx.sockid){
+		if(sid != ctx->sockid){
 			int size;
 			int descriptor = receive_fd(shmid, sid, &idx);
 
@@ -304,7 +307,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 			}
 
 			DBG ("got size %d", size);
-			idx = shmem_new_seg(shmid, descriptor, size);
+			idx = shmem_new_seg(ctx, shmid, descriptor, size);
 		}
 
 		if (idx == -1){
@@ -315,35 +318,37 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 		}
 	}
 
-	addr = shmem[idx].addr;
+	addr = pool[idx].addr;
 	if (addr == NULL) {
 		addr = mmap(
-			NULL, shmem[idx].size,
+			NULL, pool[idx].size,
 			PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
 			MAP_SHARED,
-			shmem[idx].descriptor, 0
+			pool[idx].descriptor, 0
 		);
 		if (addr == MAP_FAILED) {
-			DBG ("mmap() failed for ID %x FD %d: %s", idx, shmem[idx].descriptor, strerror(errno));
+			DBG ("mmap() failed for ID %x FD %d: %s", idx, pool[idx].descriptor, strerror(errno));
 			addr = NULL;
 		}
-		shmem[idx].addr = addr;
+		pool[idx].addr = addr;
 	}
 
-	DBG ("mapped addr %p for FD %d ID %d", addr, shmem[idx].descriptor, idx);
+	DBG ("mapped addr %p for FD %d ID %d", addr, pool[idx].descriptor, idx);
 	pthread_mutex_unlock (&mutex);
 	return addr ? addr : (void *)-1;
 }
 
-static void delete_shmem(int idx) {
-	if (shmem[idx].descriptor){
-		close (shmem[idx].descriptor);
+static void delete_shmem(shmem_ctx_t *ctx, int idx) {
+	shmem_t *pool = ctx->shmem;
+
+	if (pool[idx].descriptor){
+		close (pool[idx].descriptor);
 	}
-	shmem_amount --;
+	ctx->shmem_amount --;
 	memmove (
-		&shmem[idx],
-		&shmem[idx+1],
-		(shmem_amount - idx) * sizeof(shmem_t)
+		&pool[idx],
+		&pool[idx+1],
+		(ctx->shmem_amount - idx) * sizeof(shmem_t)
 	);
 }
 
@@ -352,17 +357,20 @@ int shmdt (const void *shmaddr) {
 	unsigned int i;
 	int rc = -1;
 
+	shmem_ctx_t *ctx = &gCtx;
+	shmem_t *pool = ctx->shmem;
+
 	pthread_mutex_lock (&mutex);
-	for (i = 0; i < shmem_amount; i++) {
-		if (shmem[i].addr == shmaddr) {
-			if (munmap (shmem[i].addr, shmem[i].size) != 0) {
+	for (i = 0; i < ctx->shmem_amount; i++) {
+		if (pool[i].addr == shmaddr) {
+			if (munmap (pool[i].addr, pool[i].size) != 0) {
 				DBG ("munmap %p failed", shmaddr);
 			}
-			shmem[i].addr = NULL;
-			DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, shmem[i].descriptor, i, shmem[i].id);
-			if (shmem[i].markedForDeletion || get_sockid(shmem[i].id) != ctx.sockid) {
-				DBG ("deleting shmid %x", shmem[i].id);
-				delete_shmem(i);
+			pool[i].addr = NULL;
+			DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, pool[i].descriptor, i, pool[i].id);
+			if (pool[i].markedForDeletion || get_sockid(pool[i].id) != ctx->sockid) {
+				DBG ("deleting shmid %x", pool[i].id);
+				delete_shmem(ctx, i);
 			}
 			rc = 0;
 			break;
@@ -378,14 +386,15 @@ int shmdt (const void *shmaddr) {
 	return rc;
 }
 
-static int shm_remove (int shmid) {
+static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 	int idx;
 	int rc = 0;
+	shmem_t *pool = ctx->shmem;
 
 	DBG ("deleting shmid %x", shmid);
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shm_find_id (shmid);
+		idx = shm_find_id (ctx, shmid);
 		if (idx == -1) {
 			DBG ("ERROR: shmid %x does not exist", shmid);
 			errno = EINVAL;
@@ -393,26 +402,28 @@ static int shm_remove (int shmid) {
 			break;
 		}
 
-		if (shmem[idx].addr) {
-			DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, shmem[idx].addr);
+		if (pool[idx].addr) {
+			DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, pool[idx].addr);
 			// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
-			shmem[idx].markedForDeletion = 1;
+			pool[idx].markedForDeletion = 1;
 			break;
 		}
-		delete_shmem(idx);
+		delete_shmem(ctx, idx);
 	} while(0);
 	pthread_mutex_unlock (&mutex);
 
 	return rc;
 }
 
-static int shm_stat (int shmid, struct shmid_ds *buf) {
+static int shm_stat (shmem_ctx_t *ctx, int shmid, struct shmid_ds *buf) {
 	int idx;
 	int rc = -1;
 
+	shmem_t *pool = ctx->shmem;
+
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shm_find_id (shmid);
+		idx = shm_find_id (ctx, shmid);
 		if (idx == -1) {
 			DBG ("ERROR: shmid %x does not exist", shmid);
 			errno = EINVAL;
@@ -429,7 +440,7 @@ static int shm_stat (int shmid, struct shmid_ds *buf) {
 
 		/* Report max permissive mode */
 		memset (buf, 0, sizeof(struct shmid_ds));
-		buf->shm_segsz = shmem[idx].size;
+		buf->shm_segsz = pool[idx].size;
 		buf->shm_nattch = 1;
 		buf->shm_perm.__key = IPC_PRIVATE;
 		buf->shm_perm.uid = uid;
@@ -451,9 +462,10 @@ static int shm_stat (int shmid, struct shmid_ds *buf) {
 int shmctl (int shmid, int cmd, struct shmid_ds *buf) {
 	//DBG ("%s: shmid %x cmd %d buf %p", __PRETTY_FUNCTION__, shmid, cmd, buf);
 
+	shmem_ctx_t *ctx = &gCtx;
 	switch(cmd){
-		case IPC_RMID: return shm_remove (shmid);
-		case IPC_STAT: return shm_stat (shmid, buf);
+		case IPC_RMID: return shm_remove (ctx, shmid);
+		case IPC_STAT: return shm_stat (ctx, shmid, buf);
 	}
 
 	DBG ("cmd %d not implemented yet!", cmd);

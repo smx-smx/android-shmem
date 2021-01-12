@@ -17,6 +17,9 @@ typedef struct {
 typedef struct {
 	int sock;
 	int sockid;
+	shmem_t *shmem;
+	size_t shmem_amount;
+	size_t shmem_counter;
 } shmem_ctx_t;
 
 #endif /* __ANDROID_SHMEM_H */
