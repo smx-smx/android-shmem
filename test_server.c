@@ -13,7 +13,9 @@ int main(int argc, char *argv[]){
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	key_t key = IPC_PRIVATE;
+	key_t key = getpid();
+	printf("pid: %u\n", key);
+
 	int shm_id = shmget(key, getpagesize(), IPC_CREAT);
 	if(shm_id < 0){
 		fprintf(stderr, "shmget() failed\n");
@@ -21,11 +23,16 @@ int main(int argc, char *argv[]){
 	}
 
 	void *mem = shmat(shm_id, NULL, 0);
+	sprintf(mem, "Hello, i am pid %u\n", key);
+
 	printf("mem: %p\n", mem);
 
 	if(mem != MAP_FAILED){
 		shmdt(mem);
 	}
+
+	puts("Press Enter to exit");
+	getchar();
 
 	if(shmctl(shm_id, IPC_RMID, NULL) < 0){
 		fprintf(stderr, "shmctl(SHM_RMID) failed\n");

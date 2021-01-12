@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -12,6 +13,9 @@
 #define STRINGIFY2(x) #x
 
 #define LOG_PREFIX "[" __FILE__ ":" STRINGIFY(__LINE__) "] %s() : "
+
+#define SUN_PATH_ABSTRACT(ptr) ((char *)(ptr) + offsetof(struct sockaddr_un, sun_path) + 1)
+//#define SUN_PATH(x) ( ((struct sockaddr_un *)(x))->sun_path + 1 )
 
 #if defined(__ANDROID__) && !defined(ASHMEM_STDOUT_LOGGING)
 #include <android/log.h>
@@ -30,8 +34,6 @@
 #endif /* __ANDROID__ */
 
 #define UNUSED(x) (void)(x)
-
-#define SUN_PATH(x) ( ((struct sockaddr_un *)(x))->sun_path + 1 )
 
 #include "libancillary/ancillary.h"
 #include "cutils/ashmem.h"
@@ -100,7 +102,7 @@ static void *listening_thread(void *arg) {
 	return NULL;
 }
 
-static int create_listener(shmem_ctx_t *ctx){
+static int create_listener(shmem_ctx_t *ctx, key_t key){
 	int i;
 	ctx->sock = socket (AF_UNIX, SOCK_STREAM, 0);
 	if (!ctx->sock) {
@@ -113,13 +115,14 @@ static int create_listener(shmem_ctx_t *ctx){
 		int len;
 		memset (&addr, 0, sizeof(addr));
 		addr.sun_family = AF_UNIX;
-		ctx->sockid = (getpid() + i) & 0xffff;
+		ctx->sockid = (key + i) & 0xffff;
 
-		char *socketPath = SUN_PATH(&addr);
-		sprintf (socketPath, SOCKNAME, ctx->sockid);
-		len = sizeof(addr.sun_family) + strlen(socketPath) + 1;
+		char *socketPath = SUN_PATH_ABSTRACT(&addr);		
+		snprintf (socketPath, sizeof(addr.sun_path) - 1, SOCKNAME, ctx->sockid);
+		len = sizeof(addr);
+
 		if (bind (ctx->sock, (struct sockaddr *)&addr, len) != 0) {
-			//DBG ("%s: cannot bind UNIX socket %s: %s, trying next one, len %d", __PRETTY_FUNCTION__, &addr.sun_path[1], strerror(errno), len);
+			//DBG ("cannot bind UNIX socket %s: %s, trying next one, len %d", addr.sun_path, strerror(errno), len);
 			continue;
 		}
 		DBG ("bound UNIX socket %s", socketPath);
@@ -140,6 +143,37 @@ static int create_listener(shmem_ctx_t *ctx){
 	return 0;
 }
 
+int try_get_socket(key_t key){
+	struct sockaddr_un addr_stack;
+	memset(&addr_stack, 0x00, sizeof(addr_stack));
+
+	struct sockaddr_un *addr = &addr_stack;
+
+	addr->sun_family = AF_UNIX;
+	char *socketPath = SUN_PATH_ABSTRACT(addr);
+	snprintf (socketPath, sizeof(addr->sun_path) - 1, SOCKNAME, key);
+	
+	int addrlen = sizeof(*addr);
+	DBG ("addr %s", addr->sun_path);
+
+	int fd = socket (AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) {
+		DBG ("cannot create UNIX socket: %s", strerror(errno));
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (connect (fd, (struct sockaddr *)addr, addrlen) != 0) {
+		DBG ("cannot connect to UNIX socket %s: %s, len %d", addr->sun_path, strerror(errno), addrlen);
+		close (fd);
+		errno = EINVAL;
+		return -1;
+	}
+
+	DBG ("connected to socket %s", addr->sun_path);
+	return fd;
+}
+
 /* Get shared memory segment.  */
 int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
@@ -150,22 +184,25 @@ int shmget (key_t key, size_t size, int flags) {
 	size_t shmid;
 
 	DBG ("key %d size %zu flags 0%o (flags are ignored)", key, size, flags);
-	if (key != IPC_PRIVATE) {
-		DBG ("key %d != IPC_PRIVATE,  this is not supported", key);
-		errno = EINVAL;
-		return rc;
-	}
-	if (!listening_thread_id) {
-		rc = create_listener(ctx);
-		if(rc != 0){
-			return rc;
+	int socket = try_get_socket(key);
+	if(socket < 0){
+		if(!listening_thread_id){
+			rc = create_listener(ctx, key);
+			if(rc != 0){
+				return rc;
+			}
 		}
+	} else {
+		ctx->sockid = key;
+		//DBG("sid: %d\n", ctx->sockid);
 	}
 
 	pthread_mutex_lock (&mutex);
 	do {
 		idx = ctx->shmem_amount;
 		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx->sockid, idx);
+		DBG("region name: %s", buf);
+
 		ctx->shmem_counter = (ctx->shmem_counter + 1) & 0x7fff;
 		shmid = ctx->shmem_counter;
 		pool = shmem_resize(ctx, ++ctx->shmem_amount);
@@ -202,9 +239,9 @@ int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
 	memset (&addr, 0, sizeof(addr));
 	addr->sun_family = AF_UNIX;
 
-	char *socketPath = SUN_PATH(&addr);
+	char *socketPath = SUN_PATH_ABSTRACT(&addr);
 	sprintf (socketPath, SOCKNAME, sid);
-	addrlen = sizeof(addr->sun_family) + strlen(socketPath) + 1;
+	addrlen = sizeof(*addr);
 
 	DBG ("addr %s", socketPath);
 
@@ -239,7 +276,7 @@ int receive_fd(int shmid, int sid, int *pidx){
 	}
 
 	do {
-		char *socketPath = SUN_PATH(&addr);
+		char *socketPath = SUN_PATH_ABSTRACT(&addr);
 		if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
 			DBG ("send() failed on socket %s: %s", socketPath, strerror(errno));
 			errno = EINVAL;
