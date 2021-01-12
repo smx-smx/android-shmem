@@ -46,6 +46,17 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static shmem_ctx_t gCtx;
 
+static int shm_find_by_addr(shmem_ctx_t *ctx, const void *addr){
+	unsigned int i;
+	for (i=0; i<ctx->shmem_amount; i++){
+		if(ctx->pool[i].addr == addr){
+			return i;
+		}
+	}
+	DBG ("cannot find addr %p", addr);
+	return -1;
+}
+
 static int shm_find_by_key(shmem_ctx_t *ctx, key_t key){
 	unsigned int i;
 	for (i = 0; i < ctx->shmem_amount; i++) {
@@ -314,7 +325,6 @@ int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
-	int sid = get_sockid(shmid);
 	void *addr;
 	shmem_ctx_t *ctx = &gCtx;
 	shmem_t *pool = ctx->pool;
@@ -379,28 +389,33 @@ static void delete_shmem(shmem_ctx_t *ctx, int idx) {
 
 /* Detach shared memory segment.  */
 int shmdt (const void *shmaddr) {
-	unsigned int i;
 	int rc = -1;
 
 	shmem_ctx_t *ctx = &gCtx;
 	shmem_t *pool = ctx->pool;
 
 	pthread_mutex_lock (&mutex);
-	for (i = 0; i < ctx->shmem_amount; i++) {
-		if (pool[i].addr == shmaddr) {
-			if (munmap (pool[i].addr, pool[i].size) != 0) {
-				DBG ("munmap %p failed", shmaddr);
-			}
-			pool[i].addr = NULL;
-			DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, pool[i].descriptor, i, pool[i].id);
-			if (pool[i].markedForDeletion || get_sockid(pool[i].id) != ctx->sockid) {
-				DBG ("deleting shmid %x", pool[i].id);
-				delete_shmem(ctx, i);
-			}
-			rc = 0;
+	do {
+		int idx = shm_find_by_addr(ctx, shmaddr);
+		if(idx < 0){
+			DBG ("invalid address %p", shmaddr);
+			errno = EINVAL;
 			break;
 		}
-	}
+
+		shmem_t *mem = &pool[idx];
+		if (munmap (mem->addr, mem->size) < 0) {
+			DBG ("munmap %p failed", shmaddr);
+			break;
+		}
+		mem->addr = NULL;
+		DBG ("unmapped addr %p for FD %d ID %d shmid %x", shmaddr, mem->descriptor, idx, mem->id);
+		if (mem->markedForDeletion || get_sockid(mem->id) != ctx->sockid) {
+			DBG ("deleting shmid %x", mem->id);
+			delete_shmem(ctx, idx);
+		}
+		rc = 0;
+	} while(0);
 	pthread_mutex_unlock (&mutex);
 
 	if(rc != 0){
