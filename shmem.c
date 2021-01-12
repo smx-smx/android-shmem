@@ -46,7 +46,18 @@ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static shmem_ctx_t gCtx;
 
-static int shm_find_id(shmem_ctx_t *ctx, int shmid){
+static int shm_find_by_key(shmem_ctx_t *ctx, key_t key){
+	unsigned int i;
+	for (i = 0; i < ctx->shmem_amount; i++) {
+		if (ctx->pool[i].key == key){
+			return i;
+		}
+	}
+	DBG ("cannot find key %x", key);
+	return -1;
+}
+
+static int shm_find_by_id(shmem_ctx_t *ctx, key_t shmid){
 	unsigned int i;
 	for (i = 0; i < ctx->shmem_amount; i++) {
 		if (ctx->pool[i].id == shmid){
@@ -73,23 +84,21 @@ static void *listening_thread(void *arg) {
 	DBG ("thread started");
 	while ((sendsock = accept(ctx->sock, (struct sockaddr *)&addr, &len)) != -1) {
 		do {
-			unsigned int shmid;
-			int idx;
-			if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-				DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(idx));
+			key_t key;
+			if (recv (sendsock, &key, sizeof(key), 0) != sizeof(key)) {
+				DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(key));
 				break;
 			}
 
 			pthread_mutex_lock (&mutex);
 			{
-				shmid = get_shmid(ctx, idx);
-				idx = shm_find_id(ctx, shmid);
+				int idx = shm_find_by_key(ctx, key);
 				if (idx != -1) {
 					if (ancil_send_fd (sendsock, pool[idx].descriptor) != 0) {
 						DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
 					}
 				} else {
-					DBG ("ERROR: cannot find shmid 0x%x", shmid);
+					DBG ("ERROR: cannot find key 0x%x", key);
 				}
 			}
 			pthread_mutex_unlock (&mutex);
@@ -143,7 +152,29 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 	return 0;
 }
 
-int try_get_socket(key_t key){
+char *asun_build_path(key_t key){
+	struct sockaddr_un dummy;
+	int max_length = sizeof(dummy.sun_path) - 1;
+	char *buf = calloc(max_length, 1);
+	snprintf(buf, max_length, SOCKNAME, key);
+	return buf;
+}
+
+int asun_path_cpy(char *dest, const char *src){
+	struct sockaddr_un dummy;
+	int in_length = strlen(src) + 1;
+	int max_length = sizeof(dummy.sun_path) - 1;
+
+	int length = in_length;
+	if(in_length > max_length){
+		length = max_length;
+	}
+
+	strncpy(dest, src, length);
+	return length;
+}
+
+int try_get_socket(const char *path){
 	struct sockaddr_un addr_stack;
 	memset(&addr_stack, 0x00, sizeof(addr_stack));
 
@@ -151,10 +182,10 @@ int try_get_socket(key_t key){
 
 	addr->sun_family = AF_UNIX;
 	char *socketPath = SUN_PATH_ABSTRACT(addr);
-	snprintf (socketPath, sizeof(addr->sun_path) - 1, SOCKNAME, key);
+	asun_path_cpy(socketPath, path);
 	
 	int addrlen = sizeof(*addr);
-	DBG ("addr %s", addr->sun_path);
+	DBG ("addr %s", socketPath);
 
 	int fd = socket (AF_UNIX, SOCK_STREAM, 0);
 	if (fd < 0) {
@@ -174,6 +205,38 @@ int try_get_socket(key_t key){
 	return fd;
 }
 
+int try_get_remote_fd(key_t key){
+	int socket = -1;
+	int fd = -1;
+
+	char *socketPath = asun_build_path(key);
+	do {
+		socket = try_get_socket(socketPath);
+		if(socket < 0){
+			break;
+		}
+
+		if (send(socket, &key, sizeof(key), 0) != sizeof(key)) {
+			DBG ("send() failed on socket %s: %s", socketPath, strerror(errno));
+			errno = EINVAL;
+			break;
+		}
+
+		if (ancil_recv_fd (socket, &fd) != 0) {
+			DBG ("ERROR: ancil_recv_fd() failed on socket %s: %s", socketPath, strerror(errno));
+			errno = EINVAL;
+			break;
+		}
+	} while(0);
+	free(socketPath);
+
+	if(socket > -1){
+		close(socket);
+	}
+
+	return fd;
+}
+
 /* Get shared memory segment.  */
 int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
@@ -184,8 +247,8 @@ int shmget (key_t key, size_t size, int flags) {
 	size_t shmid;
 
 	DBG ("key %d size %zu flags 0%o (flags are ignored)", key, size, flags);
-	int socket = try_get_socket(key);
-	if(socket < 0){
+	int ashmem_fd = try_get_remote_fd(key);
+	if(ashmem_fd < 0){
 		if(!listening_thread_id){
 			rc = create_listener(ctx, key);
 			if(rc != 0){
@@ -209,9 +272,10 @@ int shmget (key_t key, size_t size, int flags) {
 		size = ROUND_UP(size, getpagesize ());
 
 		pool[idx].size = size;
-		pool[idx].descriptor = ashmem_create_region (buf, size);
+		pool[idx].descriptor = (ashmem_fd > -1) ? ashmem_fd : ashmem_create_region (buf, size);
 		pool[idx].addr = NULL;
 		pool[idx].id = get_shmid(ctx, shmid);
+		pool[idx].key = key;
 		pool[idx].markedForDeletion = 0;
 		if (pool[idx].descriptor < 0) {
 			DBG ("ashmem_create_region() failed for size %zu: %s", size, strerror(errno));
@@ -333,7 +397,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shm_find_id (ctx, shmid);
+		idx = shm_find_by_id (ctx, shmid);
 
 		if (idx == -1){
 			if(sid != ctx->sockid){
@@ -443,7 +507,7 @@ static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 	DBG ("deleting shmid %x", shmid);
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shm_find_id (ctx, shmid);
+		idx = shm_find_by_id (ctx, shmid);
 		if (idx == -1) {
 			DBG ("ERROR: shmid %x does not exist", shmid);
 			errno = EINVAL;
@@ -472,7 +536,7 @@ static int shm_stat (shmem_ctx_t *ctx, int shmid, struct shmid_ds *buf) {
 
 	pthread_mutex_lock (&mutex);
 	do {
-		idx = shm_find_id (ctx, shmid);
+		idx = shm_find_by_id (ctx, shmid);
 		if (idx == -1) {
 			DBG ("ERROR: shmid %x does not exist", shmid);
 			errno = EINVAL;

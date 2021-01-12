@@ -7,7 +7,8 @@
 #define ROUND_UP(N, S) ((((N) + (S) - 1) / (S)) * (S))
 
 typedef struct {
-	int id;
+	key_t key;
+	key_t id;
 	void *addr;
 	int descriptor;
 	size_t size;
