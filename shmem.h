@@ -17,7 +17,7 @@ typedef struct {
 typedef struct {
 	int sock;
 	int sockid;
-	shmem_t *shmem;
+	shmem_t *pool;
 	size_t shmem_amount;
 	size_t shmem_counter;
 } shmem_ctx_t;

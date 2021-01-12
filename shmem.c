@@ -45,7 +45,7 @@ static shmem_ctx_t gCtx;
 static int shm_find_id(shmem_ctx_t *ctx, int shmid){
 	unsigned int i;
 	for (i = 0; i < ctx->shmem_amount; i++) {
-		if (ctx->shmem[i].id == shmid){
+		if (ctx->pool[i].id == shmid){
 			return i;
 		}
 	}
@@ -55,13 +55,13 @@ static int shm_find_id(shmem_ctx_t *ctx, int shmid){
 
 void *shmem_resize(shmem_ctx_t *ctx, int shmem_amount){
 	ctx->shmem_amount = shmem_amount;
-	ctx->shmem = realloc(ctx->shmem, ctx->shmem_amount * sizeof(shmem_t));
-	return ctx->shmem;
+	ctx->pool = realloc(ctx->pool, ctx->shmem_amount * sizeof(shmem_t));
+	return ctx->pool;
 }
 
 static void *listening_thread(void *arg) {
 	shmem_ctx_t *ctx = (shmem_ctx_t *)arg;
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
@@ -277,7 +277,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int sid = get_sockid(shmid);
 	void *addr;
 	shmem_ctx_t *ctx = &gCtx;
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 	intptr_t rc = -1;
 
 	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
@@ -344,7 +344,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 }
 
 static void delete_shmem(shmem_ctx_t *ctx, int idx) {
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 
 	if (pool[idx].descriptor){
 		close (pool[idx].descriptor);
@@ -363,7 +363,7 @@ int shmdt (const void *shmaddr) {
 	int rc = -1;
 
 	shmem_ctx_t *ctx = &gCtx;
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 
 	pthread_mutex_lock (&mutex);
 	for (i = 0; i < ctx->shmem_amount; i++) {
@@ -394,7 +394,7 @@ int shmdt (const void *shmaddr) {
 static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 	int idx;
 	int rc = 0;
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 
 	DBG ("deleting shmid %x", shmid);
 	pthread_mutex_lock (&mutex);
@@ -424,7 +424,7 @@ static int shm_stat (shmem_ctx_t *ctx, int shmid, struct shmid_ds *buf) {
 	int idx;
 	int rc = -1;
 
-	shmem_t *pool = ctx->shmem;
+	shmem_t *pool = ctx->pool;
 
 	pthread_mutex_lock (&mutex);
 	do {
