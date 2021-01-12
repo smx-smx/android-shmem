@@ -56,26 +56,26 @@ static void *listening_thread(void * arg) {
 	socklen_t len = sizeof(addr);
 	int sendsock;
 	DBG ("%s: thread started", __PRETTY_FUNCTION__);
-	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1)
-	{
+	while ((sendsock = accept(ctx.sock, (struct sockaddr *)&addr, &len)) != -1) {
 		unsigned int shmid;
 		int idx;
-		if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx))
-		{
+		if (recv (sendsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
 			DBG ("%s: ERROR: recv() returned not %d bytes", __PRETTY_FUNCTION__, (int)sizeof(idx));
 			close (sendsock);
 			continue;
 		}
 		pthread_mutex_lock (&mutex);
-		shmid = get_shmid(&ctx, idx);
-		idx = shm_find_id (shmid);
-		if (idx != -1)
 		{
-			if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0)
-				DBG ("%s: ERROR: ancil_send_fd() failed: %s", __PRETTY_FUNCTION__, strerror(errno));
+			shmid = get_shmid(&ctx, idx);
+			idx = shm_find_id (shmid);
+			if (idx != -1) {
+				if (ancil_send_fd (sendsock, shmem[idx].descriptor) != 0) {
+					DBG ("%s: ERROR: ancil_send_fd() failed: %s", __PRETTY_FUNCTION__, strerror(errno));
+				}
+			} else {
+				DBG ("%s: ERROR: cannot find shmid 0x%x", __PRETTY_FUNCTION__, shmid);
+			}
 		}
-		else
-			DBG ("%s: ERROR: cannot find shmid 0x%x", __PRETTY_FUNCTION__, shmid);
 		pthread_mutex_unlock (&mutex);
 		close (sendsock);
 		len = sizeof(addr);
@@ -123,8 +123,7 @@ static int create_listener(){
 }
 
 /* Get shared memory segment.  */
-int shmget (key_t key, size_t size, int flags)
-{
+int shmget (key_t key, size_t size, int flags) {
 	char buf[256];
 	int idx;
 
@@ -140,28 +139,39 @@ int shmget (key_t key, size_t size, int flags)
 			return ret;
 		}
 	}
+
+	int rc = -1;
+	size_t shmid;
+
 	pthread_mutex_lock (&mutex);
-	idx = shmem_amount;
-	snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx.sockid, idx);
-	shmem_amount ++;
-	shmem_counter = (shmem_counter + 1) & 0x7fff;
-	size_t shmid = shmem_counter;
-	shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
-	size = ROUND_UP(size, getpagesize ());
-	shmem[idx].size = size;
-	shmem[idx].descriptor = ashmem_create_region (buf, size);
-	shmem[idx].addr = NULL;
-	shmem[idx].id = get_shmid(&ctx, shmid);
-	shmem[idx].markedForDeletion = 0;
-	if (shmem[idx].descriptor < 0) {
-		DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
-		shmem_amount --;
+	do {
+		idx = shmem_amount;
+		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx.sockid, idx);
+		shmem_amount ++;
+		shmem_counter = (shmem_counter + 1) & 0x7fff;
+		shmid = shmem_counter;
 		shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
-		pthread_mutex_unlock (&mutex);
-		return -1;
-	}
-	DBG ("%s: ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, get_shmid(&ctx, shmid), shmem[idx].descriptor, shmem[idx].size);
+		size = ROUND_UP(size, getpagesize ());
+		shmem[idx].size = size;
+		shmem[idx].descriptor = ashmem_create_region (buf, size);
+		shmem[idx].addr = NULL;
+		shmem[idx].id = get_shmid(&ctx, shmid);
+		shmem[idx].markedForDeletion = 0;
+		if (shmem[idx].descriptor < 0) {
+			DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
+			shmem_amount --;
+			shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
+			pthread_mutex_unlock (&mutex);
+			break;
+		}
+		rc = 0;
+		DBG ("%s: ID %d shmid %x FD %d size %zu", __PRETTY_FUNCTION__, idx, get_shmid(&ctx, shmid), shmem[idx].descriptor, shmem[idx].size);
+	} while(0);
+
 	pthread_mutex_unlock (&mutex);
+	if(rc != 0){
+		return rc;
+	}
 
 	return get_shmid(&ctx, shmid);
 }
