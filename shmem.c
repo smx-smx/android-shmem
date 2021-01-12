@@ -15,7 +15,7 @@
 #define LOG_PREFIX "[" __FILE__ ":" STRINGIFY(__LINE__) "] %s() : "
 
 #define SUN_PATH_ABSTRACT(ptr) ((char *)(ptr) + offsetof(struct sockaddr_un, sun_path) + 1)
-//#define SUN_PATH(x) ( ((struct sockaddr_un *)(x))->sun_path + 1 )
+#define MAX_BIND_ATTEMPTS 4096
 
 #if defined(__ANDROID__) && !defined(ASHMEM_STDOUT_LOGGING)
 #include <android/log.h>
@@ -75,17 +75,19 @@ void *shmem_resize(shmem_ctx_t *ctx, int shmem_amount){
 }
 
 static void *listening_thread(void *arg) {
+	DBG ("thread started");
+
 	shmem_ctx_t *ctx = (shmem_ctx_t *)arg;
 	shmem_t *pool = ctx->pool;
 
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
-	int sendsock;
-	DBG ("thread started");
-	while ((sendsock = accept(ctx->sock, (struct sockaddr *)&addr, &len)) != -1) {
+
+	int client_sock = -1;
+	while ((client_sock = accept(ctx->sock, (struct sockaddr *)&addr, &len)) != -1) {
 		do {
 			key_t key;
-			if (recv (sendsock, &key, sizeof(key), 0) != sizeof(key)) {
+			if (recv (client_sock, &key, sizeof(key), 0) != sizeof(key)) {
 				DBG ("ERROR: recv() returned not %d bytes", (int)sizeof(key));
 				break;
 			}
@@ -94,7 +96,7 @@ static void *listening_thread(void *arg) {
 			{
 				int idx = shm_find_by_key(ctx, key);
 				if (idx != -1) {
-					if (ancil_send_fd (sendsock, pool[idx].descriptor) != 0) {
+					if (ancil_send_fd (client_sock, pool[idx].descriptor) != 0) {
 						DBG ("ERROR: ancil_send_fd() failed: %s", strerror(errno));
 					}
 				} else {
@@ -104,7 +106,7 @@ static void *listening_thread(void *arg) {
 			pthread_mutex_unlock (&mutex);
 		} while(0);
 
-		close (sendsock);
+		close (client_sock);
 	}
 
 	DBG ("ERROR: listen() failed, thread stopped");
@@ -119,10 +121,11 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 		errno = EINVAL;
 		return -1;
 	}
-	for (i = 0; i < 4096; i++) {
+	for (i = 0; i < MAX_BIND_ATTEMPTS; i++) {
 		struct sockaddr_un addr;
-		int len;
 		memset (&addr, 0, sizeof(addr));
+
+		int len;
 		addr.sun_family = AF_UNIX;
 		ctx->sockid = (key + i) & 0xffff;
 
@@ -137,7 +140,7 @@ static int create_listener(shmem_ctx_t *ctx, key_t key){
 		DBG ("bound UNIX socket %s", socketPath);
 		break;
 	}
-	if (i == 4096) {
+	if (i == MAX_BIND_ATTEMPTS) {
 		DBG ("cannot bind UNIX socket, bailing out");
 		ctx->sockid = 0;
 		errno = ENOMEM;
