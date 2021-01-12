@@ -37,3 +37,29 @@ target_include_directories(test_client PUBLIC
 	${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_client ashmem log)
+
+## adb test commands
+
+add_custom_target(adb_copy_server
+	COMMAND adb push $<TARGET_FILE:test_server> /data/local/tmp/shm_server
+	VERBATIM
+)
+add_dependencies(adb_copy_server test_server)
+
+add_custom_target(adb_copy_client
+	COMMAND adb push $<TARGET_FILE:test_client> /data/local/tmp/shm_client
+	VERBATIM
+)
+add_dependencies(adb_copy_client test_client)
+
+add_custom_target(run_server ALL 
+	COMMAND adb shell "/data/local/tmp/shm_server;echo -ne"
+	VERBATIM
+)
+add_dependencies(run_server adb_copy_server)
+
+add_custom_target(run_client ALL
+	COMMAND adb shell "/data/local/tmp/shm_client $(pidof shm_server);echo -ne"
+	VERBATIM
+)
+add_dependencies(run_client adb_copy_client)
