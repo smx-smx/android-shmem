@@ -464,14 +464,16 @@ static int shm_stat (shmem_ctx_t *ctx, int shmid, struct shmid_ds *buf) {
 			break;
 		}
 
+		shmem_t *mem = &pool[idx];
+
 		uid_t uid = geteuid();
 		gid_t gid = getegid();
 
 		/* Report max permissive mode */
 		memset (buf, 0, sizeof(struct shmid_ds));
-		buf->shm_segsz = pool[idx].size;
+		buf->shm_segsz = mem->size;
 		buf->shm_nattch = 1;
-		buf->shm_perm.__key = IPC_PRIVATE;
+		buf->shm_perm.__key = mem->key;
 		buf->shm_perm.uid = uid;
 		buf->shm_perm.gid = gid;
 		buf->shm_perm.cuid = uid;
