@@ -325,17 +325,17 @@ int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
 /* Attach shared memory segment.  */
 void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
-	void *addr;
 	shmem_ctx_t *ctx = &gCtx;
 	shmem_t *pool = ctx->pool;
-	intptr_t rc = -1;
 
 	DBG ("shmid %x shmaddr %p shmflg %d", shmid, shmaddr, shmflg);
 	if (shmaddr != NULL) {
 		DBG ("shmaddr != NULL not supported");
 		errno = EINVAL;
-		return (void *)rc;
+		return MAP_FAILED;
 	}
+
+	shmem_t *mem = NULL;
 
 	pthread_mutex_lock (&mutex);
 	do {
@@ -346,31 +346,25 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 			break;
 		}
 
-		addr = pool[idx].addr;
-		if (addr == NULL) {
-			addr = mmap(
-				NULL, pool[idx].size,
+		mem = &pool[idx];
+
+		if (mem->addr == NULL) {
+			mem->addr = mmap(
+				NULL, mem->size,
 				PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
 				MAP_SHARED,
-				pool[idx].descriptor, 0
+				mem->descriptor, 0
 			);
-			if (addr == MAP_FAILED) {
-				DBG ("mmap() failed for ID %x FD %d: %s", idx, pool[idx].descriptor, strerror(errno));
-				addr = NULL;
+			if (mem->addr == MAP_FAILED) {
+				DBG ("mmap() failed for ID %x FD %d: %s", idx, mem->descriptor, strerror(errno));
 			}
-			pool[idx].addr = addr;
 		}
 
-		DBG ("mapped addr %p for FD %d ID %d", addr, pool[idx].descriptor, idx);
-		rc = 0;
+		DBG ("mapped addr %p for FD %d ID %d", mem->addr, mem->descriptor, idx);
 	} while(0);
 
-	if(rc < 0){
-		return (void *)rc;
-	}
-
 	pthread_mutex_unlock (&mutex);
-	return addr ? addr : (void *)-1;
+	return mem ? mem->addr : MAP_FAILED;
 }
 
 static void delete_shmem(shmem_ctx_t *ctx, int idx) {
