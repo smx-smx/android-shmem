@@ -337,13 +337,19 @@ static void delete_shmem(int idx) {
 		close (shmem[idx].descriptor);
 	}
 	shmem_amount --;
-	memmove (&shmem[idx], &shmem[idx+1], (shmem_amount - idx) * sizeof(shmem_t));
+	memmove (
+		&shmem[idx],
+		&shmem[idx+1],
+		(shmem_amount - idx) * sizeof(shmem_t)
+	);
 }
 
 /* Detach shared memory segment.  */
 int shmdt (const void *shmaddr) {
-	pthread_mutex_lock (&mutex);
 	unsigned int i;
+	int rc = -1;
+
+	pthread_mutex_lock (&mutex);
 	for (i = 0; i < shmem_amount; i++) {
 		if (shmem[i].addr == shmaddr) {
 			if (munmap (shmem[i].addr, shmem[i].size) != 0) {
@@ -355,76 +361,87 @@ int shmdt (const void *shmaddr) {
 				DBG ("deleting shmid %x", shmem[i].id);
 				delete_shmem(i);
 			}
-			pthread_mutex_unlock (&mutex);
-			return 0;
+			rc = 0;
+			break;
 		}
 	}
 	pthread_mutex_unlock (&mutex);
 
-	DBG ("invalid address %p", shmaddr);
-	errno = EINVAL;
-	return -1;
+	if(rc != 0){
+		DBG ("invalid address %p", shmaddr);
+		errno = EINVAL;
+	}
+
+	return rc;
 }
 
 static int shm_remove (int shmid) {
 	int idx;
+	int rc = 0;
 
 	DBG ("deleting shmid %x", shmid);
 	pthread_mutex_lock (&mutex);
-	idx = shm_find_id (shmid);
-	if (idx == -1) {
-		DBG ("ERROR: shmid %x does not exist", shmid);
-		pthread_mutex_unlock (&mutex);
-		errno = EINVAL;
-		return -1;
-	}
+	do {
+		idx = shm_find_id (shmid);
+		if (idx == -1) {
+			DBG ("ERROR: shmid %x does not exist", shmid);
+			errno = EINVAL;
+			rc = -1;
+			break;
+		}
 
-	if (shmem[idx].addr) {
-		DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, shmem[idx].addr);
-		// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
-		shmem[idx].markedForDeletion = 1;
-		pthread_mutex_unlock (&mutex);
-		return 0;
-	}
-	delete_shmem(idx);
+		if (shmem[idx].addr) {
+			DBG ("shmid %x is still mapped to addr %p, it will be deleted on shmdt() call", shmid, shmem[idx].addr);
+			// KDE lib creates shared memory segment, marks it for deletion, and then uses it as if it's not deleted
+			shmem[idx].markedForDeletion = 1;
+			break;
+		}
+		delete_shmem(idx);
+	} while(0);
 	pthread_mutex_unlock (&mutex);
-	return 0;
+
+	return rc;
 }
 
 static int shm_stat (int shmid, struct shmid_ds *buf) {
 	int idx;
+	int rc = -1;
 
 	pthread_mutex_lock (&mutex);
-	idx = shm_find_id (shmid);
-	if (idx == -1) {
-		DBG ("ERROR: shmid %x does not exist", shmid);
-		pthread_mutex_unlock (&mutex);
-		errno = EINVAL;
-		return -1;
-	}
-	if (!buf) {
-		DBG ("ERROR: buf == NULL for shmid %x", shmid);
-		pthread_mutex_unlock (&mutex);
-		errno = EINVAL;
-		return -1;
-	}
+	do {
+		idx = shm_find_id (shmid);
+		if (idx == -1) {
+			DBG ("ERROR: shmid %x does not exist", shmid);
+			errno = EINVAL;
+			break;
+		}
+		if (!buf) {
+			DBG ("ERROR: buf == NULL for shmid %x", shmid);
+			errno = EINVAL;
+			break;
+		}
 
-	/* Report max permissive mode */
-	memset (buf, 0, sizeof(struct shmid_ds));
-	buf->shm_segsz = shmem[idx].size;
-	buf->shm_nattch = 1;
-	buf->shm_perm.__key = IPC_PRIVATE;
-	buf->shm_perm.uid = geteuid();
-	buf->shm_perm.gid = getegid();
-	buf->shm_perm.cuid = geteuid();
-	buf->shm_perm.cgid = getegid();
-	buf->shm_perm.mode = 0666;
-	buf->shm_perm.__seq = 1;
+		uid_t uid = geteuid();
+		gid_t gid = getegid();
 
-	DBG ("shmid %x size %d", shmid, (int)buf->shm_segsz);
+		/* Report max permissive mode */
+		memset (buf, 0, sizeof(struct shmid_ds));
+		buf->shm_segsz = shmem[idx].size;
+		buf->shm_nattch = 1;
+		buf->shm_perm.__key = IPC_PRIVATE;
+		buf->shm_perm.uid = uid;
+		buf->shm_perm.gid = gid;
+		buf->shm_perm.cuid = uid;
+		buf->shm_perm.cgid = gid;
+		buf->shm_perm.mode = 0666;
+		buf->shm_perm.__seq = 1;
+		DBG ("shmid %x size %d", shmid, (int)buf->shm_segsz);
 
+		rc = 0;
+	} while(0);
 	pthread_mutex_unlock (&mutex);
-	return 0;
+
+	return rc;
 }
 
 /* Shared memory control operation.  */
