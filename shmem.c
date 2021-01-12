@@ -11,23 +11,22 @@
 #define STRINGIFY(x) STRINGIFY2(x)
 #define STRINGIFY2(x) #x
 
-#define LOG_PREFIX "[" __FILE__ ":%s:" STRINGIFY(__LINE__) "] "
+#define LOG_PREFIX "[" __FILE__ ":" STRINGIFY(__LINE__) "] %s() : "
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) && !defined(ASHMEM_STDOUT_LOGGING)
 #include <android/log.h>
 #include "sys/shm.h"
-
 
 #ifdef NDEBUG
 #define DBG(fmt, ...) do {} while (0)
 #else
-#define DBG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shmem", LOG_PREFIX fmt, STRINGIFY(__PRETTY_FUNC__), ##__VA_ARGS__)
+#define DBG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "shmem", LOG_PREFIX fmt, __func__, ##__VA_ARGS__)
 #endif
 
 #else /* __ANDROID__ */
 #include <sys/shm.h>
 
-#define DBG(fmt, ...) fprintf(stderr, LOG_PREFIX fmt "\n", STRINGIFY(__PRETTY_FUNC__), ##__VA_ARGS__)
+#define DBG(fmt, ...) fprintf(stderr, LOG_PREFIX fmt "\n", __func__, ##__VA_ARGS__)
 #endif /* __ANDROID__ */
 
 #define UNUSED(x) (void)(x)
@@ -133,7 +132,7 @@ static int create_listener(shmem_ctx_t *ctx){
 		errno = ENOMEM;
 		return -1;
 	}
-	pthread_create (&listening_thread_id, NULL, &listening_thread, NULL);
+	pthread_create (&listening_thread_id, NULL, &listening_thread, ctx);
 	return 0;
 }
 
@@ -260,7 +259,7 @@ int receive_fd(int shmid, int sid, int *pidx){
 
 int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
 	shmem_t *pool = ctx->shmem;
-	
+
 	int idx = ctx->shmem_amount++;
 	shmem_resize(ctx, ctx->shmem_amount);
 	pool[idx].id = shmid;
