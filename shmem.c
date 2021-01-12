@@ -51,6 +51,11 @@ static int shm_find_id(int shmid){
 	return -1;
 }
 
+void *shmem_resize(int shmem_amount){
+	shmem = realloc(shmem, shmem_amount * sizeof(shmem_t));
+	return shmem;
+}
+
 static void *listening_thread(void * arg) {
 	struct sockaddr_un addr;
 	socklen_t len = sizeof(addr);
@@ -147,10 +152,9 @@ int shmget (key_t key, size_t size, int flags) {
 	do {
 		idx = shmem_amount;
 		snprintf (buf, sizeof(buf), SOCKNAME "-%d", ctx.sockid, idx);
-		shmem_amount ++;
 		shmem_counter = (shmem_counter + 1) & 0x7fff;
 		shmid = shmem_counter;
-		shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
+		shmem_resize(++shmem_amount);
 		size = ROUND_UP(size, getpagesize ());
 		shmem[idx].size = size;
 		shmem[idx].descriptor = ashmem_create_region (buf, size);
@@ -159,8 +163,7 @@ int shmget (key_t key, size_t size, int flags) {
 		shmem[idx].markedForDeletion = 0;
 		if (shmem[idx].descriptor < 0) {
 			DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
-			shmem_amount --;
-			shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
+			shmem_resize(--shmem_amount);
 			break;
 		}
 		rc = 0;
@@ -239,8 +242,7 @@ int shmem_new_seg(int shmid, int fd, int size){
 	pthread_mutex_lock (&mutex);
 
 	int idx = shmem_amount;
-	shmem_amount ++;
-	shmem = realloc(shmem, shmem_amount * sizeof(shmem_t));
+	shmem_resize(++shmem_amount);
 	shmem[idx].id = shmid;
 	shmem[idx].descriptor = fd;
 	shmem[idx].size = size;
@@ -251,15 +253,13 @@ int shmem_new_seg(int shmid, int fd, int size){
 }
 
 /* Attach shared memory segment.  */
-void *shmat (int shmid, const void *shmaddr, int shmflg)
-{
+void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	int idx;
 	int sid = get_sockid(shmid);
 	void *addr;
 	DBG ("%s: shmid %x shmaddr %p shmflg %d", __PRETTY_FUNCTION__, shmid, shmaddr, shmflg);
 
-	if (shmaddr != NULL)
-	{
+	if (shmaddr != NULL) {
 		DBG ("%s: shmaddr != NULL not supported", __PRETTY_FUNCTION__);
 		errno = EINVAL;
 		return (void *)-1;
