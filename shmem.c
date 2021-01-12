@@ -294,77 +294,6 @@ int shmget (key_t key, size_t size, int flags) {
 	return get_shmid(ctx, shmid);
 }
 
-int create_client(int shmid, int sid, int *pidx, struct sockaddr_un *addr){
-	int addrlen;
-	int recvsock;
-	DBG ("sockid %x", sid);
-
-	*pidx = get_index(shmid);
-	memset (&addr, 0, sizeof(addr));
-	addr->sun_family = AF_UNIX;
-
-	char *socketPath = SUN_PATH_ABSTRACT(&addr);
-	sprintf (socketPath, SOCKNAME, sid);
-	addrlen = sizeof(*addr);
-
-	DBG ("addr %s", socketPath);
-
-	recvsock = socket (AF_UNIX, SOCK_STREAM, 0);
-	if (!recvsock) {
-		DBG ("cannot create UNIX socket: %s", strerror(errno));
-		errno = EINVAL;
-		return -1;
-	}
-	if (connect (recvsock, (struct sockaddr *)addr, addrlen) != 0) {
-		DBG ("cannot connect to UNIX socket %s: %s, len %d", socketPath, strerror(errno), addrlen);
-		close (recvsock);
-		errno = EINVAL;
-		return -1;
-	}
-
-	DBG ("connected to socket %s", socketPath);
-
-	return recvsock;
-}
-
-int receive_fd(int shmid, int sid, int *pidx){
-	int idx;
-	struct sockaddr_un addr;
-	int descriptor;
-
-	int rc = -1;
-
-	int recvsock = create_client(shmid, sid, &idx, &addr);
-	if(recvsock < 0){
-		return rc;
-	}
-
-	do {
-		char *socketPath = SUN_PATH_ABSTRACT(&addr);
-		if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
-			DBG ("send() failed on socket %s: %s", socketPath, strerror(errno));
-			errno = EINVAL;
-			break;
-		}
-
-		if (ancil_recv_fd (recvsock, &descriptor) != 0) {
-			DBG ("ERROR: ancil_recv_fd() failed on socket %s: %s", socketPath, strerror(errno));
-			errno = EINVAL;
-			break;
-		}
-
-		rc = 0;
-	} while(0);
-	close (recvsock);
-
-	if(rc < 0){
-		return rc;
-	}
-
-	*pidx = idx;
-	return descriptor;
-}
-
 int shmem_new_seg(shmem_ctx_t *ctx, int shmid, int fd, int size){
 	shmem_t *pool = NULL;
 
@@ -398,30 +327,10 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 	pthread_mutex_lock (&mutex);
 	do {
 		idx = shm_find_by_id (ctx, shmid);
-
 		if (idx == -1){
-			if(sid != ctx->sockid){
-				int size;
-				int descriptor = receive_fd(shmid, sid, &idx);
-
-				DBG ("got FD %d", descriptor);
-
-				size = ashmem_get_size_region(descriptor);
-				if (size == 0 || size == -1) {
-					DBG ("ERROR: ashmem_get_size_region() returned %d on socket %d: %s", size, sid, strerror(errno));
-					errno = EINVAL;
-					break;
-				}
-
-				DBG ("got size %d", size);
-				idx = shmem_new_seg(ctx, shmid, descriptor, size);
-			}
-
-			if (idx == -1){
-				DBG ("shmid %x does not exist", shmid);
-				errno = EINVAL;
-				break;
-			}
+			DBG ("shmid %x does not exist", shmid);
+			errno = EINVAL;
+			break;
 		}
 
 		addr = pool[idx].addr;
