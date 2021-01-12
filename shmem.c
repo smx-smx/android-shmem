@@ -161,7 +161,6 @@ int shmget (key_t key, size_t size, int flags) {
 			DBG ("%s: ashmem_create_region() failed for size %zu: %s", __PRETTY_FUNCTION__, size, strerror(errno));
 			shmem_amount --;
 			shmem = realloc (shmem, shmem_amount * sizeof(shmem_t));
-			pthread_mutex_unlock (&mutex);
 			break;
 		}
 		rc = 0;
@@ -217,16 +216,14 @@ int receive_fd(int shmid, int sid, int *pidx){
 		return -1;
 	}
 
-	if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx))
-	{
+	if (send (recvsock, &idx, sizeof(idx), 0) != sizeof(idx)) {
 		DBG ("%s: send() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
 		close (recvsock);
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (ancil_recv_fd (recvsock, &descriptor) != 0)
-	{
+	if (ancil_recv_fd (recvsock, &descriptor) != 0) {
 		DBG ("%s: ERROR: ancil_recv_fd() failed on socket %s: %s", __PRETTY_FUNCTION__, addr.sun_path + 1, strerror(errno));
 		close (recvsock);
 		errno = EINVAL;
@@ -272,8 +269,6 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 	idx = shm_find_id (shmid);
 
 	if (idx == -1){
-		pthread_mutex_unlock (&mutex);
-
 		if(sid != ctx.sockid){
 			int size;
 			int descriptor = receive_fd(shmid, sid, &idx);
@@ -293,6 +288,7 @@ void *shmat (int shmid, const void *shmaddr, int shmflg)
 		}
 
 		if (idx == -1){
+			pthread_mutex_unlock (&mutex);
 			DBG ("%s: shmid %x does not exist", __PRETTY_FUNCTION__, shmid);
 			errno = EINVAL;
 			return (void *)-1;
