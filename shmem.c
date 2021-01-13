@@ -285,22 +285,26 @@ int shmget (key_t key, size_t size, int flags) {
 
 		ctx->shmem_counter = (ctx->shmem_counter + 1) & 0x7fff;
 		shmid = ctx->shmem_counter;
+
 		pool = shmem_resize(ctx, ++ctx->shmem_amount);
 		size = ROUND_UP(size, getpagesize ());
 
-		pool[idx].size = size;
-		pool[idx].descriptor = (ashmem_fd > -1) ? ashmem_fd : ashmem_create_region (buf, size);
-		pool[idx].addr = MAP_FAILED;
-		pool[idx].id = get_shmid(ctx, shmid);
-		pool[idx].key = key;
-		pool[idx].markedForDeletion = 0;
-		if (pool[idx].descriptor < 0) {
+		shmem_t mem = {
+			.size = size,
+			.descriptor = (ashmem_fd > -1) ? ashmem_fd : ashmem_create_region (buf, size),
+			.addr = MAP_FAILED,
+			.id = get_shmid(ctx, shmid),
+			.key = key,
+			.markedForDeletion = 0,
+		};
+		if(mem.descriptor < 0){
 			DBG ("ashmem_create_region() failed for size %zu: %s", size, strerror(errno));
 			pool = shmem_resize(ctx, --ctx->shmem_amount);
 			break;
 		}
+		pool[idx] = mem;
 		rc = 0;
-		DBG ("ID %d shmid %x FD %d size %zu", idx, get_shmid(ctx, shmid), pool[idx].descriptor, pool[idx].size);
+		DBG ("ID %d shmid %x FD %d size %zu", idx, mem.id, mem.descriptor, mem.size);
 	} while(0);
 
 	pthread_mutex_unlock (&mutex);
