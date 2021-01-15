@@ -4,6 +4,8 @@
 #include <sys/shm.h>
 #include <sys/mman.h>
 
+#include <string.h>
+
 #define UNUSED(x) (void)(x)
 
 int main(int argc, char *argv[]){
@@ -23,11 +25,10 @@ int main(int argc, char *argv[]){
 	}
 
 	void *mem = shmat(shm_id, NULL, 0);
-	sprintf(mem, "Hello, i am pid %u\n", key);
-
 	printf("mem: %p\n", mem);
 
 	if(mem != MAP_FAILED){
+		sprintf(mem, "Hello, i am pid %u\n", key);
 		shmdt(mem);
 	}
 

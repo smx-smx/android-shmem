@@ -346,13 +346,13 @@ void *shmat (int shmid, const void *shmaddr, int shmflg) {
 
 		mem = &pool[idx];
 
+		int map_flags = PROT_READ | PROT_WRITE;
+		if((shmflg & SHM_EXEC) == SHM_EXEC){
+			map_flags |= PROT_EXEC;
+		}
+
 		if (mem->addr == MAP_FAILED) {
-			mem->addr = mmap(
-				NULL, mem->size,
-				PROT_READ | (shmflg == 0 ? PROT_WRITE : 0),
-				MAP_SHARED,
-				mem->descriptor, 0
-			);
+			mem->addr = mmap(NULL, mem->size, map_flags, MAP_SHARED, mem->descriptor, 0);
 			if (mem->addr == MAP_FAILED) {
 				DBG ("mmap() failed for ID %x FD %d: %s", idx, mem->descriptor, strerror(errno));
 			}
@@ -444,7 +444,6 @@ static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 		delete_shmem(ctx, idx);
 	} while(0);
 	pthread_mutex_unlock (&mutex);
-
 	return rc;
 }
 

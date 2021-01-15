@@ -21,7 +21,7 @@ int main(int argc, char *argv[]){
 		return 1;
 	}
 
-	void *mem = shmat(shm_id, NULL, 0);
+	void *mem = shmat(shm_id, NULL, SHM_EXEC);
 	printf("mem: %p\n", mem);
 
 	if(mem != MAP_FAILED){
