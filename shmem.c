@@ -44,7 +44,13 @@
 static pthread_t listening_thread_id = 0;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static shmem_ctx_t gCtx;
+static shmem_ctx_t gCtx = {
+	.sock = -1,
+	.sockid = 0,
+	.pool = NULL,
+	.shmem_amount = 0,
+	.shmem_counter = 0
+};
 
 static int shm_find_by_addr(shmem_ctx_t *ctx, const void *addr){
 	unsigned int i;
@@ -142,7 +148,7 @@ static void *listening_thread(void *arg) {
 		close (client_sock);
 	}
 
-	DBG ("ERROR: listen() failed, thread stopped");
+	DBG ("thread stopping");
 	return NULL;
 }
 
@@ -444,6 +450,11 @@ static int shm_remove (shmem_ctx_t *ctx, int shmid) {
 		delete_shmem(ctx, idx);
 	} while(0);
 	pthread_mutex_unlock (&mutex);
+
+	if(ctx->shmem_amount == 0 && ctx->sock > -1){
+		DBG("shutting down socket %d", ctx->sock);
+		shutdown(ctx->sock, SHUT_RDWR);
+	}
 	return rc;
 }
 
